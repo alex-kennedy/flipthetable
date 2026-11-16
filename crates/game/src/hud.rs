@@ -1,9 +1,7 @@
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
 
 use crate::destruction::{PendingPopups, ScoreState};
 use crate::flip::FlipTracker;
-use crate::pixel_art::{PIXEL_HEIGHT, PIXEL_WIDTH};
 use crate::GamePhase;
 
 #[derive(Component)]
@@ -272,7 +270,6 @@ pub fn spawn_score_popups(
     mut commands: Commands,
     mut pending: ResMut<PendingPopups>,
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
-    win_q: Query<&Window, With<PrimaryWindow>>,
 ) {
     if pending.0.is_empty() {
         return;
@@ -281,14 +278,9 @@ pub fn spawn_score_popups(
         pending.0.clear();
         return;
     };
-    let (scale_x, scale_y) = win_q
-        .single()
-        .map(|w| (w.width() / PIXEL_WIDTH as f32, w.height() / PIXEL_HEIGHT as f32))
-        .unwrap_or((1.0, 1.0));
 
     for item in pending.0.drain(..) {
-        if let Ok(vp) = camera.world_to_viewport(cam_tf, item.world_pos) {
-            let screen_pos = Vec2::new(vp.x * scale_x, vp.y * scale_y);
+        if let Ok(screen_pos) = camera.world_to_viewport(cam_tf, item.world_pos) {
             let font_size = if item.big { 18.0 } else { 14.0 };
             commands.spawn((
                 FloatingPopup {

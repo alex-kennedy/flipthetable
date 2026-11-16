@@ -5,7 +5,6 @@ mod pixel_art;
 mod scene;
 
 use avian3d::prelude::*;
-use bevy::camera::RenderTarget;
 use bevy::prelude::*;
 use bevy::window::{PresentMode, WindowResolution};
 use wasm_bindgen::prelude::*;
@@ -18,9 +17,7 @@ use hud::{
     animate_score_popups, setup_hud, spawn_score_popups, update_hud, FloatingPopup, HudState,
     RetryButton,
 };
-use pixel_art::{
-    create_pixel_render_target, create_procedural_textures, PixelRenderTarget, ProceduralTextures,
-};
+use pixel_art::{create_procedural_textures, ProceduralTextures};
 use scene::{spawn_office_scenario, ScenarioEntity};
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -90,11 +87,7 @@ fn setup_pixel_pipeline_and_camera(
     mut images: ResMut<Assets<Image>>,
     rig: Res<CameraRig>,
 ) {
-    let pixel_image = create_pixel_render_target(&mut images);
     let textures = create_procedural_textures(&mut images);
-    commands.insert_resource(PixelRenderTarget {
-        image: pixel_image.clone(),
-    });
     commands.insert_resource(textures);
 
     // Warm office ambient bounce light so shadows are rich, never pitch black
@@ -126,39 +119,11 @@ fn setup_pixel_pipeline_and_camera(
         Transform::from_xyz(-2.8, 3.2, -1.0),
     ));
 
-    // 3D scene camera renders into the 480x270 nearest-neighbor pixel buffer.
-    // Msaa::Off is required for offscreen RenderTarget::Image on WebGL2 and keeps pixels crisp.
+    // 3D scene camera renders directly to the window with Msaa::Off for crisp retro edges
     commands.spawn((
         Camera3d::default(),
         Msaa::Off,
-        Camera {
-            order: 0,
-            ..default()
-        },
-        RenderTarget::Image(pixel_image.clone().into()),
         Transform::from_translation(rig.seated_pos).looking_at(rig.seated_look, Vec3::Y),
-    ));
-
-    // Main window 2D camera displays the upscaled pixel buffer + crisp bevy_ui HUD
-    commands.spawn((
-        Camera2d,
-        IsDefaultUiCamera,
-        Msaa::Off,
-        Camera {
-            order: 1,
-            ..default()
-        },
-    ));
-
-    commands.spawn((
-        ImageNode::new(pixel_image),
-        Node {
-            position_type: PositionType::Absolute,
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            ..default()
-        },
-        ZIndex(-10),
     ));
 }
 
