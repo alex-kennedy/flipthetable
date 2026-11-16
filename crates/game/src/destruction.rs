@@ -48,6 +48,14 @@ pub struct DebrisChunk {
     pub ttl: f32,
 }
 
+#[derive(Component)]
+pub struct ExplosionPuff {
+    pub age: f32,
+    pub duration: f32,
+    pub velocity: Vec3,
+    pub max_scale: f32,
+}
+
 pub fn process_destruction(
     mut commands: Commands,
     time: Res<Time<Real>>,
@@ -207,6 +215,49 @@ pub fn process_destruction(
                 ));
             }
 
+            // Spawn retro pixel explosion puffs (core flash + outward fire/spark cubes)
+            let puff_mesh = meshes.add(Cuboid::new(0.18, 0.18, 0.18));
+            let core_mat = materials.add(StandardMaterial {
+                base_color: Color::srgb(1.0, 0.95, 0.45),
+                emissive: LinearRgba::rgb(2.6, 2.1, 0.6),
+                ..default()
+            });
+            let fire_mat = materials.add(StandardMaterial {
+                base_color: Color::srgb(1.0, 0.48, 0.12),
+                emissive: LinearRgba::rgb(2.0, 0.75, 0.15),
+                ..default()
+            });
+
+            commands.spawn((
+                ScenarioEntity,
+                ExplosionPuff {
+                    age: 0.0,
+                    duration: 0.30,
+                    velocity: Vec3::Y * 0.6,
+                    max_scale: 3.4,
+                },
+                Mesh3d(puff_mesh.clone()),
+                MeshMaterial3d(core_mat),
+                Transform::from_translation(tf.translation + Vec3::Y * 0.15).with_scale(Vec3::splat(0.4)),
+            ));
+
+            for i in 0..8_u8 {
+                let a = (i as f32 / 8.0) * std::f32::consts::TAU;
+                let vel = Vec3::new(a.cos() * 4.2, 2.2 + (i % 3) as f32 * 1.1, a.sin() * 4.2);
+                commands.spawn((
+                    ScenarioEntity,
+                    ExplosionPuff {
+                        age: 0.0,
+                        duration: 0.42,
+                        velocity: vel,
+                        max_scale: 1.5,
+                    },
+                    Mesh3d(puff_mesh.clone()),
+                    MeshMaterial3d(fire_mat.clone()),
+                    Transform::from_translation(tf.translation + Vec3::Y * 0.12).with_scale(Vec3::splat(0.3)),
+                ));
+            }
+
             commands.entity(entity).despawn();
         } else if !prop.damaged && !prop.shattered && delta_v >= prop.damage_impulse {
             prop.damaged = true;
@@ -237,6 +288,33 @@ pub fn update_debris_lifetime(
             tf.scale = Vec3::splat(s);
         }
         if chunk.ttl <= 0.0 {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+pub fn update_explosion_puffs(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut q: Query<(Entity, &mut ExplosionPuff, &mut Transform)>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut puff, mut tf) in &mut q {
+        puff.age += dt;
+        let t = (puff.age / puff.duration).clamp(0.0, 1.0);
+        tf.translation += puff.velocity * dt;
+        puff.velocity *= 0.90;
+        tf.rotate_y(dt * 6.0);
+        tf.rotate_x(dt * 4.5);
+
+        let scale = if t < 0.25 {
+            0.3 + (t / 0.25) * (puff.max_scale - 0.3)
+        } else {
+            puff.max_scale * (1.0 - (t - 0.25) / 0.75)
+        };
+        tf.scale = Vec3::splat(scale.max(0.01));
+
+        if puff.age >= puff.duration {
             commands.entity(entity).despawn();
         }
     }

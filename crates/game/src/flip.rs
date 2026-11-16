@@ -29,7 +29,7 @@ impl FlipTracker {
     fn push_sample(&mut self, pos: Vec2, t: f32) {
         self.samples.push_back((pos, t));
         while let Some(&(_, oldest_t)) = self.samples.front() {
-            if t - oldest_t > 0.14 && self.samples.len() > 2 {
+            if t - oldest_t > 0.09 && self.samples.len() > 2 {
                 self.samples.pop_front();
             } else {
                 break;
@@ -37,25 +37,37 @@ impl FlipTracker {
         }
     }
 
-    /// Computes (normalized_power 0..=1, lateral_aim -1..=1) from velocity + upward acceleration.
+    /// Computes (normalized_power 0..=1, lateral_aim -1..=1) from peak instantaneous speed + acceleration.
     fn compute_thrust(&self) -> Option<(f32, f32)> {
         if self.samples.len() < 2 {
             return None;
         }
         let &(first_pos, first_t) = self.samples.front()?;
         let &(last_pos, last_t) = self.samples.back()?;
-        let dt = (last_t - first_t).max(0.008);
+        let dt = (last_t - first_t).max(0.006);
 
         // Screen Y grows downward, so upward swipe has negative dy.
         let delta = last_pos - first_pos;
         let upward_px = -delta.y;
-        if upward_px < 18.0 {
+        if upward_px < 10.0 {
             return None;
         }
 
-        let upward_vel = upward_px / dt;
+        let avg_upward_vel = upward_px / dt;
 
-        // Measure peak upward acceleration between first half and second half of the window.
+        // Track peak instantaneous upward segment velocity so quick wrist flicks register immediately.
+        let mut peak_seg_vel = avg_upward_vel;
+        for i in 0..self.samples.len() - 1 {
+            let (p0, t0) = self.samples[i];
+            let (p1, t1) = self.samples[i + 1];
+            let seg_dt = (t1 - t0).max(0.004);
+            let seg_v = -(p1.y - p0.y) / seg_dt;
+            if seg_v > peak_seg_vel {
+                peak_seg_vel = seg_v;
+            }
+        }
+
+        // Measure upward acceleration between first half and second half of the window.
         let mid_idx = self.samples.len() / 2;
         let (mid_pos, mid_t) = self.samples[mid_idx];
         let dt1 = (mid_t - first_t).max(0.004);
@@ -64,11 +76,11 @@ impl FlipTracker {
         let v2 = -(last_pos.y - mid_pos.y) / dt2;
         let accel = ((v2 - v1) / ((dt1 + dt2) * 0.5)).max(0.0);
 
-        let combined = upward_vel * 0.72 + accel * 0.085;
-        let power = ((combined - 180.0) / 2200.0).clamp(0.18, 1.0);
+        let combined = peak_seg_vel * 0.58 + avg_upward_vel * 0.42 + accel * 0.065;
+        let power = ((combined - 110.0) / 1350.0).clamp(0.15, 1.0);
 
         let lateral_vel = delta.x / dt;
-        let aim = (lateral_vel / 1400.0).clamp(-1.0, 1.0);
+        let aim = (lateral_vel / 1100.0).clamp(-1.0, 1.0);
         Some((power, aim))
     }
 }
@@ -160,16 +172,16 @@ pub fn handle_flip_gesture(
             tracker.last_launch_power = power;
             for (mut lin_vel, mut ang_vel) in &mut desk_q {
                 // Launch forward (-Z), upward (+Y), and laterally steered (X).
-                let forward_speed = 6.5 + power * 10.5;
-                let upward_speed = 3.2 + power * 4.8;
-                let lateral_speed = aim * (3.5 + power * 5.0);
+                let forward_speed = 5.5 + power * 15.0;
+                let upward_speed = 2.8 + power * 6.2;
+                let lateral_speed = aim * (4.0 + power * 6.0);
                 lin_vel.0 = Vec3::new(lateral_speed, upward_speed, -forward_speed);
 
                 // Pitch forward/away (-X) so it flips end-over-end, with slight roll/yaw.
                 ang_vel.0 = Vec3::new(
-                    -(5.5 + power * 7.5),
-                    -aim * 2.2,
-                    -aim * 3.0,
+                    -(5.0 + power * 10.5),
+                    -aim * 2.5,
+                    -aim * 3.5,
                 );
             }
             camera_rig.add_trauma(0.28 + power * 0.25);

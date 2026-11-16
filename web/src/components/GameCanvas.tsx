@@ -90,6 +90,19 @@ export function GameCanvas() {
         }}
       />
 
+      {/* Subtle retro CRT scanlines & vignette over the 3D canvas */}
+      <div
+        className="scanlines"
+        style={{
+          position: "absolute",
+          inset: 0,
+          pointerEvents: "none",
+          opacity: 0.32,
+          boxShadow: "inset 0 0 90px rgba(0, 0, 0, 0.55)",
+          zIndex: 5,
+        }}
+      />
+
       {/* Minimal floating top-right shell controls */}
       <div
         style={{

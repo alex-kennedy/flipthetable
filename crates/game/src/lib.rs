@@ -12,7 +12,8 @@ use wasm_bindgen::prelude::*;
 
 use audio::{flush_audio_queue, RetroAudio};
 use destruction::{
-    check_run_settled, process_destruction, update_debris_lifetime, PendingPopups, ScoreState,
+    check_run_settled, process_destruction, update_debris_lifetime, update_explosion_puffs,
+    PendingPopups, ScoreState,
 };
 use flip::{handle_flip_gesture, update_follow_camera, CameraRig, FlipTracker};
 use hud::{
@@ -76,6 +77,7 @@ pub fn start_game(canvas_selector: &str) {
                 handle_flip_gesture.run_if(in_state(GamePhase::Ready)),
                 (process_destruction, check_run_settled).run_if(in_state(GamePhase::Flipping)),
                 update_debris_lifetime,
+                update_explosion_puffs,
                 update_follow_camera,
                 spawn_score_popups,
                 animate_score_popups,
