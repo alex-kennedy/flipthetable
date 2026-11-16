@@ -4,6 +4,32 @@ use bevy::prelude::*;
 
 use crate::pixel_art::ProceduralTextures;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ScenarioId {
+    #[default]
+    CorporateCubicle,
+    BuildingSite,
+}
+
+impl ScenarioId {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::CorporateCubicle => "CORPORATE CUBICLE",
+            Self::BuildingSite => "BUILDING SITE TRAILER",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::CorporateCubicle => Self::BuildingSite,
+            Self::BuildingSite => Self::CorporateCubicle,
+        }
+    }
+}
+
+#[derive(Resource, Default)]
+pub struct CurrentScenario(pub ScenarioId);
+
 #[derive(Component)]
 pub struct ScenarioEntity;
 
@@ -81,31 +107,32 @@ impl DestructibleProp {
     }
 }
 
-pub fn spawn_office_scenario(
+pub fn spawn_scenario(
+    id: ScenarioId,
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     textures: &ProceduralTextures,
 ) {
-    // ── Room Static Geometry ───────────────────────────────────────────────
-    let floor_mat = materials.add(StandardMaterial {
-        base_color_texture: Some(textures.carpet.clone()),
-        uv_transform: Affine2::from_scale(Vec2::splat(10.0)),
-        perceptual_roughness: 0.9,
-        ..default()
-    });
-    let wall_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.80, 0.77, 0.70),
-        perceptual_roughness: 0.9,
-        ..default()
-    });
-    let trim_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.20, 0.24, 0.30),
-        perceptual_roughness: 0.8,
-        ..default()
-    });
+    match id {
+        ScenarioId::CorporateCubicle => {
+            spawn_office_scenario(commands, meshes, materials, textures)
+        }
+        ScenarioId::BuildingSite => {
+            spawn_building_site_scenario(commands, meshes, materials, textures)
+        }
+    }
+}
 
-    // Floor (bouncy enough for satisfying ricochets)
+fn spawn_room_bounds(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    floor_mat: Handle<StandardMaterial>,
+    wall_mat: Handle<StandardMaterial>,
+    trim_mat: Handle<StandardMaterial>,
+    window_mat: Handle<StandardMaterial>,
+) {
+    // Floor
     commands.spawn((
         ScenarioEntity,
         RigidBody::Static,
@@ -156,12 +183,7 @@ pub fn spawn_office_scenario(
         ));
     }
 
-    // Back window with Venetian blind slats
-    let window_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(1.0, 0.86, 0.48),
-        emissive: LinearRgba::rgb(0.85, 0.64, 0.25),
-        ..default()
-    });
+    // Back window + Venetian blind slats
     commands.spawn((
         ScenarioEntity,
         Mesh3d(meshes.add(Cuboid::new(3.8, 1.9, 0.06))),
@@ -180,19 +202,53 @@ pub fn spawn_office_scenario(
     }
 
     // Ceiling fluorescent light strips
-    let fluor_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.95, 0.98, 1.0),
-        emissive: LinearRgba::rgb(1.1, 1.15, 1.2),
-        ..default()
-    });
     for fz in [-1.2_f32, -4.0_f32] {
         commands.spawn((
             ScenarioEntity,
             Mesh3d(meshes.add(Cuboid::new(2.2, 0.06, 0.45))),
-            MeshMaterial3d(fluor_mat.clone()),
+            MeshMaterial3d(trim_mat.clone()),
             Transform::from_xyz(0.0, 4.15, fz),
         ));
     }
+}
+
+pub fn spawn_office_scenario(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    textures: &ProceduralTextures,
+) {
+    // ── Room Static Geometry ───────────────────────────────────────────────
+    let floor_mat = materials.add(StandardMaterial {
+        base_color_texture: Some(textures.carpet.clone()),
+        uv_transform: Affine2::from_scale(Vec2::splat(10.0)),
+        perceptual_roughness: 0.9,
+        ..default()
+    });
+    let wall_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.80, 0.77, 0.70),
+        perceptual_roughness: 0.9,
+        ..default()
+    });
+    let trim_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.20, 0.24, 0.30),
+        perceptual_roughness: 0.8,
+        ..default()
+    });
+    let window_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.86, 0.48),
+        emissive: LinearRgba::rgb(0.85, 0.64, 0.25),
+        ..default()
+    });
+
+    spawn_room_bounds(
+        commands,
+        meshes,
+        floor_mat,
+        wall_mat,
+        trim_mat.clone(),
+        window_mat,
+    );
 
     // ── Player's Oak Desk ──────────────────────────────────────────────────
     let oak_mat = materials.add(StandardMaterial {
@@ -751,4 +807,363 @@ pub fn spawn_office_scenario(
                 Transform::from_xyz(0.0, 0.02, 0.20),
             ));
         });
+}
+
+pub fn spawn_building_site_scenario(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    textures: &ProceduralTextures,
+) {
+    // ── Portable Site Trailer Room ─────────────────────────────────────────
+    let floor_mat = materials.add(StandardMaterial {
+        base_color_texture: Some(textures.wood.clone()),
+        uv_transform: Affine2::from_scale(Vec2::splat(6.0)),
+        perceptual_roughness: 0.85,
+        ..default()
+    });
+    let wall_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.62, 0.66, 0.64),
+        perceptual_roughness: 0.78,
+        ..default()
+    });
+    let hazard_trim_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.95, 0.72, 0.14),
+        perceptual_roughness: 0.6,
+        ..default()
+    });
+    let window_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.58, 0.84, 0.98),
+        emissive: LinearRgba::rgb(0.35, 0.62, 0.85),
+        ..default()
+    });
+
+    spawn_room_bounds(
+        commands,
+        meshes,
+        floor_mat,
+        wall_mat,
+        hazard_trim_mat.clone(),
+        window_mat,
+    );
+
+    // ── Folding Site Table (lighter, flies further!) ───────────────────────
+    let table_top_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.48, 0.52, 0.56),
+        perceptual_roughness: 0.55,
+        ..default()
+    });
+    let steel_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.22, 0.24, 0.28),
+        perceptual_roughness: 0.45,
+        ..default()
+    });
+
+    commands
+        .spawn((
+            ScenarioEntity,
+            PlayerDesk,
+            RigidBody::Dynamic,
+            Mass(17.0),
+            Friction::new(0.28),
+            Restitution::new(0.45),
+            LinearDamping(0.08),
+            AngularDamping(0.08),
+            Collider::compound(vec![
+                (
+                    Vec3::new(0.0, 0.34, 0.0),
+                    Quat::IDENTITY,
+                    Collider::cuboid(2.0, 0.06, 0.95),
+                ),
+                (
+                    Vec3::new(-0.88, -0.02, -0.38),
+                    Quat::IDENTITY,
+                    Collider::cuboid(0.07, 0.68, 0.07),
+                ),
+                (
+                    Vec3::new(0.88, -0.02, -0.38),
+                    Quat::IDENTITY,
+                    Collider::cuboid(0.07, 0.68, 0.07),
+                ),
+                (
+                    Vec3::new(-0.88, -0.02, 0.38),
+                    Quat::IDENTITY,
+                    Collider::cuboid(0.07, 0.68, 0.07),
+                ),
+                (
+                    Vec3::new(0.88, -0.02, 0.38),
+                    Quat::IDENTITY,
+                    Collider::cuboid(0.07, 0.68, 0.07),
+                ),
+            ]),
+            Transform::from_xyz(0.0, 0.38, 0.85),
+            Visibility::default(),
+        ))
+        .with_children(|desk| {
+            desk.spawn((
+                Mesh3d(meshes.add(Cuboid::new(2.0, 0.06, 0.95))),
+                MeshMaterial3d(table_top_mat),
+                Transform::from_xyz(0.0, 0.34, 0.0),
+            ));
+            let leg_mesh = meshes.add(Cuboid::new(0.07, 0.68, 0.07));
+            for (lx, lz) in [(-0.88, -0.38), (0.88, -0.38), (-0.88, 0.38), (0.88, 0.38)] {
+                desk.spawn((
+                    Mesh3d(leg_mesh.clone()),
+                    MeshMaterial3d(steel_mat.clone()),
+                    Transform::from_xyz(lx, -0.02, lz),
+                ));
+            }
+        });
+
+    // ── Site Desk Props ────────────────────────────────────────────────────
+    // Yellow Hard Hat
+    let hardhat_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.98, 0.78, 0.12),
+        perceptual_roughness: 0.35,
+        ..default()
+    });
+    commands
+        .spawn((
+            ScenarioEntity,
+            DestructibleProp::small(
+                "OSHA VIOLATION!",
+                240,
+                Color::srgb(0.98, 0.78, 0.14),
+                DebrisStyle::Generic,
+            ),
+            RigidBody::Dynamic,
+            Mass(0.7),
+            Restitution::new(0.62),
+            Friction::new(0.26),
+            LinearDamping(0.09),
+            AngularDamping(0.09),
+            Collider::cylinder(0.14, 0.12),
+            Mesh3d(meshes.add(Cylinder::new(0.14, 0.11))),
+            MeshMaterial3d(hardhat_mat),
+            Transform::from_xyz(-0.52, 0.82, 0.82),
+        ))
+        .with_children(|hat| {
+            hat.spawn((
+                Mesh3d(meshes.add(Cylinder::new(0.17, 0.025))),
+                MeshMaterial3d(hazard_trim_mat.clone()),
+                Transform::from_xyz(0.0, -0.045, 0.0),
+            ));
+        });
+
+    // Rolled Blueprints
+    let blueprint_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.20, 0.52, 0.90),
+        perceptual_roughness: 0.8,
+        ..default()
+    });
+    for (bx, bz) in [(0.15, 0.84), (0.28, 0.94)] {
+        let mut bp = DestructibleProp::small(
+            "BLUEPRINTS RUINED!",
+            160,
+            Color::srgb(0.32, 0.66, 0.96),
+            DebrisStyle::Papers,
+        );
+        bp.break_impulse = 1.6;
+        bp.debris_count = 9;
+        commands.spawn((
+            ScenarioEntity,
+            bp,
+            RigidBody::Dynamic,
+            Mass(0.6),
+            Restitution::new(0.50),
+            Friction::new(0.28),
+            LinearDamping(0.09),
+            AngularDamping(0.09),
+            Collider::cylinder(0.055, 0.52),
+            Mesh3d(meshes.add(Cylinder::new(0.055, 0.52))),
+            MeshMaterial3d(blueprint_mat.clone()),
+            Transform::from_xyz(bx, 0.82, bz)
+                .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+        ));
+    }
+
+    // Dented Metal Thermos
+    let thermos_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.78, 0.22, 0.18),
+        perceptual_roughness: 0.4,
+        ..default()
+    });
+    commands
+        .spawn((
+            ScenarioEntity,
+            DestructibleProp::small(
+                "HOT THERMOS!",
+                180,
+                Color::srgb(0.82, 0.26, 0.20),
+                DebrisStyle::Generic,
+            ),
+            RigidBody::Dynamic,
+            Mass(0.9),
+            Restitution::new(0.58),
+            Friction::new(0.28),
+            LinearDamping(0.09),
+            AngularDamping(0.09),
+            Collider::cylinder(0.06, 0.24),
+            Mesh3d(meshes.add(Cylinder::new(0.06, 0.24))),
+            MeshMaterial3d(thermos_mat),
+            Transform::from_xyz(0.64, 0.88, 0.95),
+        ))
+        .with_children(|th| {
+            th.spawn((
+                Mesh3d(meshes.add(Cylinder::new(0.052, 0.05))),
+                MeshMaterial3d(steel_mat.clone()),
+                Transform::from_xyz(0.0, 0.14, 0.0),
+            ));
+        });
+
+    // Walkie-Talkie
+    let radio_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.18, 0.20, 0.24),
+        perceptual_roughness: 0.6,
+        ..default()
+    });
+    commands
+        .spawn((
+            ScenarioEntity,
+            DestructibleProp::small(
+                "WALKIE-TALKIE!",
+                200,
+                Color::srgb(0.95, 0.72, 0.18),
+                DebrisStyle::Electronics,
+            ),
+            RigidBody::Dynamic,
+            Mass(0.65),
+            Restitution::new(0.56),
+            Friction::new(0.28),
+            LinearDamping(0.09),
+            AngularDamping(0.09),
+            Collider::cuboid(0.08, 0.18, 0.06),
+            Mesh3d(meshes.add(Cuboid::new(0.08, 0.18, 0.06))),
+            MeshMaterial3d(radio_mat),
+            Transform::from_xyz(-0.18, 0.85, 1.04),
+        ))
+        .with_children(|rad| {
+            rad.spawn((
+                Mesh3d(meshes.add(Cylinder::new(0.01, 0.12))),
+                MeshMaterial3d(steel_mat.clone()),
+                Transform::from_xyz(0.025, 0.14, 0.0),
+            ));
+        });
+
+    // ── Room Targets ───────────────────────────────────────────────────────
+    // Whiteboard on wheels
+    let board_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.94, 0.96, 0.98),
+        perceptual_roughness: 0.4,
+        ..default()
+    });
+    commands
+        .spawn((
+            ScenarioEntity,
+            DestructibleProp::tall(
+                "SITE WHITEBOARD!",
+                420,
+                Color::srgb(0.94, 0.96, 0.98),
+                DebrisStyle::Generic,
+            ),
+            RigidBody::Dynamic,
+            Mass(11.0),
+            Restitution::new(0.50),
+            Friction::new(0.28),
+            LinearDamping(0.09),
+            AngularDamping(0.09),
+            Collider::cuboid(1.5, 1.45, 0.12),
+            Mesh3d(meshes.add(Cuboid::new(1.5, 1.15, 0.08))),
+            MeshMaterial3d(board_mat),
+            Transform::from_xyz(-1.35, 0.95, -2.0),
+        ))
+        .with_children(|wb| {
+            wb.spawn((
+                Mesh3d(meshes.add(Cuboid::new(1.56, 0.08, 0.12))),
+                MeshMaterial3d(steel_mat.clone()),
+                Transform::from_xyz(0.0, -0.60, 0.0),
+            ));
+        });
+
+    // Mini-Fridge
+    let fridge_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.86, 0.88, 0.90),
+        perceptual_roughness: 0.45,
+        ..default()
+    });
+    commands.spawn((
+        ScenarioEntity,
+        DestructibleProp::tall(
+            "LUNCH RUINED!",
+            500,
+            Color::srgb(0.85, 0.88, 0.92),
+            DebrisStyle::Generic,
+        ),
+        RigidBody::Dynamic,
+        Mass(16.0),
+        Restitution::new(0.45),
+        Friction::new(0.32),
+        LinearDamping(0.09),
+        AngularDamping(0.09),
+        Collider::cuboid(0.65, 0.95, 0.65),
+        Mesh3d(meshes.add(Cuboid::new(0.65, 0.95, 0.65))),
+        MeshMaterial3d(fridge_mat),
+        Transform::from_xyz(1.45, 0.48, -2.4),
+    ));
+
+    // Orange Traffic Cones
+    let cone_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.98, 0.42, 0.10),
+        perceptual_roughness: 0.5,
+        ..default()
+    });
+    for (cx, cz) in [(-0.4, -1.6), (0.55, -2.8)] {
+        commands.spawn((
+            ScenarioEntity,
+            DestructibleProp::small(
+                "SAFETY CONE!",
+                160,
+                Color::srgb(0.98, 0.45, 0.12),
+                DebrisStyle::Generic,
+            ),
+            RigidBody::Dynamic,
+            Mass(1.5),
+            Restitution::new(0.68),
+            Friction::new(0.24),
+            LinearDamping(0.08),
+            AngularDamping(0.08),
+            Collider::cone(0.18, 0.55),
+            Mesh3d(meshes.add(Cone::new(0.18, 0.55))),
+            MeshMaterial3d(cone_mat.clone()),
+            Transform::from_xyz(cx, 0.28, cz),
+        ));
+    }
+
+    // Heavy Toolboxes & Paint Cans in the back
+    let toolbox_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.84, 0.16, 0.16),
+        perceptual_roughness: 0.45,
+        ..default()
+    });
+    for (tx, tz) in [(-0.95, -3.7), (0.85, -3.9)] {
+        commands.spawn((
+            ScenarioEntity,
+            DestructibleProp::tall(
+                "TOOLBOX SMASH!",
+                450,
+                Color::srgb(0.86, 0.20, 0.20),
+                DebrisStyle::Generic,
+            ),
+            RigidBody::Dynamic,
+            Mass(10.0),
+            Restitution::new(0.50),
+            Friction::new(0.28),
+            LinearDamping(0.09),
+            AngularDamping(0.09),
+            Collider::cuboid(0.68, 0.42, 0.36),
+            Mesh3d(meshes.add(Cuboid::new(0.68, 0.42, 0.36))),
+            MeshMaterial3d(toolbox_mat.clone()),
+            Transform::from_xyz(tx, 0.22, tz),
+        ));
+    }
 }

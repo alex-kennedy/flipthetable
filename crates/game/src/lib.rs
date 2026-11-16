@@ -17,10 +17,10 @@ use destruction::{
 use flip::{handle_flip_gesture, update_follow_camera, CameraRig, FlipTracker};
 use hud::{
     animate_score_popups, setup_hud, spawn_score_popups, update_hud, FloatingPopup, HudState,
-    RetryButton,
+    NextScenarioButton, RetryButton,
 };
 use pixel_art::{create_procedural_textures, ProceduralTextures};
-use scene::{spawn_office_scenario, ScenarioEntity};
+use scene::{spawn_scenario, CurrentScenario, ScenarioEntity, ScenarioId};
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GamePhase {
@@ -60,6 +60,7 @@ pub fn start_game(canvas_selector: &str) {
         .init_resource::<PendingPopups>()
         .init_resource::<HudState>()
         .init_resource::<RetroAudio>()
+        .init_resource::<CurrentScenario>()
         .add_systems(
             Startup,
             (
@@ -136,20 +137,25 @@ fn setup_initial_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     textures: Res<ProceduralTextures>,
+    scenario: Res<CurrentScenario>,
 ) {
-    spawn_office_scenario(&mut commands, &mut meshes, &mut materials, &textures);
+    spawn_scenario(scenario.0, &mut commands, &mut meshes, &mut materials, &textures);
 }
 
 #[allow(deprecated)]
 fn handle_retry_input(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
-    btn_q: Query<&Interaction, (Changed<Interaction>, With<RetryButton>)>,
+    btn_q: Query<
+        (&Interaction, Option<&RetryButton>, Option<&NextScenarioButton>),
+        Changed<Interaction>,
+    >,
     scenario_q: Query<Entity, With<ScenarioEntity>>,
     popup_q: Query<Entity, With<FloatingPopup>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     textures: Res<ProceduralTextures>,
+    mut current_scenario: ResMut<CurrentScenario>,
     mut tracker: ResMut<FlipTracker>,
     mut rig: ResMut<CameraRig>,
     mut score: ResMut<ScoreState>,
@@ -158,10 +164,34 @@ fn handle_retry_input(
     mut virtual_time: ResMut<Time<Virtual>>,
     mut next_state: ResMut<NextState<GamePhase>>,
 ) {
-    let clicked_retry = btn_q.iter().any(|i| *i == Interaction::Pressed);
-    if !keys.just_pressed(KeyCode::KeyR) && !clicked_retry {
-        return;
+    let mut clicked_retry = false;
+    let mut clicked_next = false;
+    for (interaction, is_retry, is_next) in &btn_q {
+        if *interaction == Interaction::Pressed {
+            if is_retry.is_some() {
+                clicked_retry = true;
+            }
+            if is_next.is_some() {
+                clicked_next = true;
+            }
+        }
     }
+
+    let mut target_scenario = None;
+    if keys.just_pressed(KeyCode::Digit1) {
+        target_scenario = Some(ScenarioId::CorporateCubicle);
+    } else if keys.just_pressed(KeyCode::Digit2) {
+        target_scenario = Some(ScenarioId::BuildingSite);
+    } else if keys.just_pressed(KeyCode::KeyN) || clicked_next {
+        target_scenario = Some(current_scenario.0.next());
+    } else if keys.just_pressed(KeyCode::KeyR) || clicked_retry {
+        target_scenario = Some(current_scenario.0);
+    }
+
+    let Some(next_id) = target_scenario else {
+        return;
+    };
+    current_scenario.0 = next_id;
 
     for entity in &scenario_q {
         commands.entity(entity).despawn();
@@ -177,7 +207,7 @@ fn handle_retry_input(
     hud_state.displayed_score = 0.0;
     virtual_time.set_relative_speed(1.0);
 
-    spawn_office_scenario(&mut commands, &mut meshes, &mut materials, &textures);
+    spawn_scenario(next_id, &mut commands, &mut meshes, &mut materials, &textures);
     next_state.set(GamePhase::Ready);
 }
 

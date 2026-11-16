@@ -1,15 +1,7 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
-
-pub const PIXEL_WIDTH: u32 = 480;
-pub const PIXEL_HEIGHT: u32 = 270;
-
-#[derive(Resource)]
-pub struct PixelRenderTarget {
-    pub image: Handle<Image>,
-}
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 #[derive(Resource)]
 pub struct ProceduralTextures {
@@ -17,26 +9,6 @@ pub struct ProceduralTextures {
     pub wood: Handle<Image>,
     pub crt_angry: Handle<Image>,
     pub cat_poster: Handle<Image>,
-}
-
-pub fn create_pixel_render_target(images: &mut Assets<Image>) -> Handle<Image> {
-    let size = Extent3d {
-        width: PIXEL_WIDTH,
-        height: PIXEL_HEIGHT,
-        depth_or_array_layers: 1,
-    };
-    let mut image = Image::new_fill(
-        size,
-        TextureDimension::D2,
-        &[0, 0, 0, 255],
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
-    );
-    image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING
-        | TextureUsages::COPY_DST
-        | TextureUsages::RENDER_ATTACHMENT;
-    image.sampler = ImageSampler::nearest();
-    images.add(image)
 }
 
 pub fn create_procedural_textures(images: &mut Assets<Image>) -> ProceduralTextures {

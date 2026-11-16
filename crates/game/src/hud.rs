@@ -2,7 +2,11 @@ use bevy::prelude::*;
 
 use crate::destruction::{PendingPopups, ScoreState};
 use crate::flip::FlipTracker;
+use crate::scene::CurrentScenario;
 use crate::GamePhase;
+
+#[derive(Component)]
+pub struct ScenarioText;
 
 #[derive(Component)]
 pub struct ScoreText;
@@ -24,6 +28,9 @@ pub struct SettledStatsText;
 
 #[derive(Component)]
 pub struct RetryButton;
+
+#[derive(Component)]
+pub struct NextScenarioButton;
 
 #[derive(Component)]
 pub struct FloatingPopup {
@@ -57,6 +64,15 @@ pub fn setup_hud(mut commands: Commands) {
             BorderColor::all(Color::srgb(0.95, 0.75, 0.25)),
         ))
         .with_children(|parent| {
+            parent.spawn((
+                ScenarioText,
+                Text::new("CORPORATE CUBICLE  [1/2]"),
+                TextFont {
+                    font_size: FontSize::Px(11.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.55, 0.88, 0.96)),
+            ));
             parent.spawn((
                 ScoreText,
                 Text::new("SCORE  00000"),
@@ -177,26 +193,54 @@ pub fn setup_hud(mut commands: Commands) {
                 TextColor(Color::srgb(0.98, 0.94, 0.82)),
             ));
 
-            card.spawn((
-                RetryButton,
-                Interaction::default(),
-                Node {
-                    padding: UiRect::axes(Val::Px(20.0), Val::Px(10.0)),
-                    border: UiRect::all(Val::Px(2.0)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgb(0.95, 0.75, 0.25)),
-                BorderColor::all(Color::srgb(0.98, 0.94, 0.82)),
-            ))
-            .with_children(|btn| {
-                btn.spawn((
-                    Text::new("FLIP AGAIN [R]"),
-                    TextFont {
-                        font_size: FontSize::Px(15.0),
+            card.spawn(Node {
+                column_gap: Val::Px(10.0),
+                ..default()
+            })
+            .with_children(|row| {
+                row.spawn((
+                    RetryButton,
+                    Interaction::default(),
+                    Node {
+                        padding: UiRect::axes(Val::Px(16.0), Val::Px(10.0)),
+                        border: UiRect::all(Val::Px(2.0)),
                         ..default()
                     },
-                    TextColor(Color::srgb(0.05, 0.06, 0.09)),
-                ));
+                    BackgroundColor(Color::srgb(0.95, 0.75, 0.25)),
+                    BorderColor::all(Color::srgb(0.98, 0.94, 0.82)),
+                ))
+                .with_children(|btn| {
+                    btn.spawn((
+                        Text::new("RETRY [R]"),
+                        TextFont {
+                            font_size: FontSize::Px(14.0),
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.05, 0.06, 0.09)),
+                    ));
+                });
+
+                row.spawn((
+                    NextScenarioButton,
+                    Interaction::default(),
+                    Node {
+                        padding: UiRect::axes(Val::Px(16.0), Val::Px(10.0)),
+                        border: UiRect::all(Val::Px(2.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.14, 0.18, 0.25)),
+                    BorderColor::all(Color::srgb(0.55, 0.88, 0.96)),
+                ))
+                .with_children(|btn| {
+                    btn.spawn((
+                        Text::new("NEXT ROOM [N]"),
+                        TextFont {
+                            font_size: FontSize::Px(14.0),
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.55, 0.88, 0.96)),
+                    ));
+                });
             });
         });
 }
@@ -204,12 +248,46 @@ pub fn setup_hud(mut commands: Commands) {
 pub fn update_hud(
     time: Res<Time>,
     phase: Res<State<GamePhase>>,
+    scenario: Res<CurrentScenario>,
     score: Res<ScoreState>,
     tracker: Res<FlipTracker>,
     mut hud_state: ResMut<HudState>,
-    mut score_q: Query<&mut Text, (With<ScoreText>, Without<ComboText>, Without<SettledStatsText>)>,
-    mut combo_q: Query<&mut Text, (With<ComboText>, Without<ScoreText>, Without<SettledStatsText>)>,
-    mut stats_q: Query<&mut Text, (With<SettledStatsText>, Without<ScoreText>, Without<ComboText>)>,
+    mut scenario_q: Query<
+        &mut Text,
+        (
+            With<ScenarioText>,
+            Without<ScoreText>,
+            Without<ComboText>,
+            Without<SettledStatsText>,
+        ),
+    >,
+    mut score_q: Query<
+        &mut Text,
+        (
+            With<ScoreText>,
+            Without<ScenarioText>,
+            Without<ComboText>,
+            Without<SettledStatsText>,
+        ),
+    >,
+    mut combo_q: Query<
+        &mut Text,
+        (
+            With<ComboText>,
+            Without<ScenarioText>,
+            Without<ScoreText>,
+            Without<SettledStatsText>,
+        ),
+    >,
+    mut stats_q: Query<
+        &mut Text,
+        (
+            With<SettledStatsText>,
+            Without<ScenarioText>,
+            Without<ScoreText>,
+            Without<ComboText>,
+        ),
+    >,
     mut prompt_q: Query<&mut Node, (With<PromptOverlay>, Without<SettledOverlay>, Without<PowerBarFill>)>,
     mut settled_q: Query<&mut Node, (With<SettledOverlay>, Without<PromptOverlay>, Without<PowerBarFill>)>,
     mut power_q: Query<&mut Node, (With<PowerBarFill>, Without<PromptOverlay>, Without<SettledOverlay>)>,
@@ -219,6 +297,10 @@ pub fn update_hud(
     hud_state.displayed_score += (target - hud_state.displayed_score) * (1.0 - (-12.0 * dt).exp());
     if (target - hud_state.displayed_score).abs() < 0.8 {
         hud_state.displayed_score = target;
+    }
+
+    if let Ok(mut text) = scenario_q.single_mut() {
+        text.0 = format!("{}  [1/2]", scenario.0.title());
     }
 
     if let Ok(mut text) = score_q.single_mut() {
