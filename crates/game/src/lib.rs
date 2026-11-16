@@ -1,9 +1,11 @@
 mod destruction;
 mod flip;
 mod hud;
+mod pixel_art;
 mod scene;
 
 use avian3d::prelude::*;
+use bevy::camera::RenderTarget;
 use bevy::prelude::*;
 use bevy::window::{PresentMode, WindowResolution};
 use wasm_bindgen::prelude::*;
@@ -16,6 +18,7 @@ use hud::{
     animate_score_popups, setup_hud, spawn_score_popups, update_hud, FloatingPopup, HudState,
     RetryButton,
 };
+use pixel_art::{create_pixel_render_target, create_procedural_textures, PixelRenderTarget};
 use scene::{spawn_office_scenario, ScenarioEntity};
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -55,7 +58,15 @@ pub fn start_game(canvas_selector: &str) {
         .init_resource::<ScoreState>()
         .init_resource::<PendingPopups>()
         .init_resource::<HudState>()
-        .add_systems(Startup, (setup_camera_and_lights, setup_initial_scene, setup_hud, notify_js_ready))
+        .add_systems(
+            Startup,
+            (
+                setup_pixel_pipeline_and_camera,
+                setup_initial_scene.after(setup_pixel_pipeline_and_camera),
+                setup_hud.after(setup_pixel_pipeline_and_camera),
+                notify_js_ready,
+            ),
+        )
         .add_systems(
             Update,
             (
@@ -72,22 +83,76 @@ pub fn start_game(canvas_selector: &str) {
         .run();
 }
 
-fn setup_camera_and_lights(mut commands: Commands, rig: Res<CameraRig>) {
-    // Warm sunlit directional light
+fn setup_pixel_pipeline_and_camera(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    rig: Res<CameraRig>,
+) {
+    let pixel_image = create_pixel_render_target(&mut images);
+    let textures = create_procedural_textures(&mut images);
+    commands.insert_resource(PixelRenderTarget {
+        image: pixel_image.clone(),
+    });
+    commands.insert_resource(textures);
+
+    // Warm office ambient bounce light so shadows are rich, never pitch black
+    commands.insert_resource(GlobalAmbientLight {
+        color: Color::srgb(0.65, 0.72, 0.85),
+        brightness: 420.0,
+        ..default()
+    });
+
+    // Warm sunlit directional key light
     commands.spawn((
         DirectionalLight {
-            illuminance: 10_500.0,
-            color: Color::srgb(1.0, 0.94, 0.80),
+            illuminance: 13_500.0,
+            color: Color::srgb(1.0, 0.92, 0.74),
             shadow_maps_enabled: true,
             ..default()
         },
-        Transform::from_xyz(3.5, 6.5, 3.5).looking_at(Vec3::new(0.0, 0.6, -2.0), Vec3::Y),
+        Transform::from_xyz(3.2, 6.8, 3.0).looking_at(Vec3::new(0.0, 0.6, -2.0), Vec3::Y),
     ));
 
-    // Seated PoV camera
+    // Subtle cool cubicle fill light
+    commands.spawn((
+        PointLight {
+            color: Color::srgb(0.55, 0.85, 0.95),
+            intensity: 80_000.0,
+            range: 14.0,
+            ..default()
+        },
+        Transform::from_xyz(-2.8, 3.2, -1.0),
+    ));
+
+    // 3D scene camera renders into the 480x270 nearest-neighbor pixel buffer
     commands.spawn((
         Camera3d::default(),
+        Camera {
+            order: 0,
+            ..default()
+        },
+        RenderTarget::Image(pixel_image.clone().into()),
         Transform::from_translation(rig.seated_pos).looking_at(rig.seated_look, Vec3::Y),
+    ));
+
+    // Main window 2D camera displays the upscaled pixel buffer + crisp bevy_ui HUD
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 1,
+            ..default()
+        },
+    ));
+
+    commands.spawn((
+        ImageNode::new(pixel_image),
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            ..default()
+        },
+        ZIndex(-10),
     ));
 }
 
