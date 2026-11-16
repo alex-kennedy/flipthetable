@@ -169,11 +169,11 @@ export function GameCanvas() {
           style={{
             position: "relative",
             zIndex: 2,
-            width: "min(520px, 100%)",
-            background: "rgba(13, 15, 20, 0.9)",
+            width: "min(440px, 100%)",
+            background: "rgba(13, 15, 20, 0.88)",
             border: "3px solid #f2bf40",
-            boxShadow: "0 8px 0 #07080b",
-            padding: "20px 24px",
+            boxShadow: "0 6px 0 #07080b",
+            padding: "16px 20px",
             display: "flex",
             flexDirection: "column",
             gap: "12px",
@@ -182,24 +182,64 @@ export function GameCanvas() {
           <div
             style={{
               display: "flex",
-              justifyContent: "space-between",
-              alignItems: "baseline",
-              gap: "12px",
+              alignItems: "center",
+              gap: "14px",
             }}
           >
-            <h1
-              style={{
-                margin: 0,
-                fontSize: "clamp(18px, 3vw, 24px)",
-                letterSpacing: "0.12em",
-                color: "#f2bf40",
-              }}
+            {/* Cute animated pixel-art steaming coffee mug SVG */}
+            <svg
+              width="36"
+              height="36"
+              viewBox="0 0 18 18"
+              shapeRendering="crispEdges"
+              aria-hidden="true"
+              style={{ flexShrink: 0 }}
             >
-              FLIP THE TABLE
-            </h1>
-            <span style={{ fontSize: "11px", color: "#8be9fd", letterSpacing: "0.08em" }}>
-              WASM // BEVY
-            </span>
+              {/* Rising pixel steam */}
+              <g fill="#f5efe0">
+                <rect className="steam-1" x="6" y="4" width="1" height="2" />
+                <rect className="steam-2" x="8" y="3" width="1" height="2" />
+                <rect className="steam-3" x="10" y="4" width="1" height="2" />
+              </g>
+              {/* Mug body & handle */}
+              <rect x="4" y="7" width="8" height="8" fill="#f5efe0" />
+              <rect x="5" y="7" width="6" height="1" fill="#6b3e26" />
+              <rect x="12" y="9" width="2" height="1" fill="#d9cfc0" />
+              <rect x="13" y="10" width="1" height="2" fill="#d9cfc0" />
+              <rect x="12" y="12" width="2" height="1" fill="#d9cfc0" />
+              {/* Cute face on mug */}
+              <rect x="6" y="10" width="1" height="1" fill="#1a1f2b" />
+              <rect x="9" y="10" width="1" height="1" fill="#1a1f2b" />
+              <rect x="7" y="12" width="2" height="1" fill="#f2bf40" />
+              {/* Subtle base shadow */}
+              <rect x="4" y="15" width="8" height="1" fill="#b8ae9e" />
+            </svg>
+
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <h1
+                style={{
+                  margin: 0,
+                  fontSize: "clamp(16px, 2.6vw, 20px)",
+                  letterSpacing: "0.1em",
+                  color: "#f2bf40",
+                }}
+              >
+                FLIP THE TABLE
+              </h1>
+              <div
+                style={{
+                  marginTop: "2px",
+                  fontSize: "11px",
+                  letterSpacing: "0.08em",
+                  color: "#f5efe0",
+                  opacity: 0.78,
+                }}
+              >
+                {stage === "fetching"
+                  ? "BREWING WASM ENGINE..."
+                  : "SETTING UP THE DESK..."}
+              </div>
+            </div>
           </div>
 
           {stage === "error" ? (
@@ -208,44 +248,24 @@ export function GameCanvas() {
               <div style={{ marginTop: "4px", opacity: 0.9 }}>{errorMsg}</div>
             </div>
           ) : (
-            <>
+            <div
+              style={{
+                width: "100%",
+                height: "8px",
+                background: "#1a1f2b",
+                border: "2px solid #3a445c",
+                overflow: "hidden",
+              }}
+            >
               <div
+                className="loading-bar-indeterminate"
                 style={{
-                  width: "100%",
-                  height: "12px",
-                  background: "#1a1f2b",
-                  border: "2px solid #3a445c",
-                  overflow: "hidden",
+                  width: "35%",
+                  height: "100%",
+                  background: "#f2bf40",
                 }}
-              >
-                <div
-                  className="loading-bar-indeterminate"
-                  style={{
-                    width: "35%",
-                    height: "100%",
-                    background: "#f2bf40",
-                  }}
-                />
-              </div>
-
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  fontSize: "11px",
-                  letterSpacing: "0.08em",
-                  color: "#f5efe0",
-                  opacity: 0.85,
-                }}
-              >
-                <span>
-                  {stage === "fetching"
-                    ? "DOWNLOADING WASM ENGINE..."
-                    : "BOOTING PHYSICS & SCENE..."}
-                </span>
-                <span>HOLD &amp; FLICK UP TO FLIP</span>
-              </div>
-            </>
+              />
+            </div>
           )}
         </div>
       </div>
