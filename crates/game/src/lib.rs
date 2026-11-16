@@ -1,6 +1,30 @@
+mod destruction;
+mod flip;
+mod hud;
+mod scene;
+
+use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::window::{PresentMode, WindowResolution};
 use wasm_bindgen::prelude::*;
+
+use destruction::{
+    check_run_settled, process_destruction, update_debris_lifetime, PendingPopups, ScoreState,
+};
+use flip::{handle_flip_gesture, update_follow_camera, CameraRig, FlipTracker};
+use hud::{
+    animate_score_popups, setup_hud, spawn_score_popups, update_hud, FloatingPopup, HudState,
+    RetryButton,
+};
+use scene::{spawn_office_scenario, ScenarioEntity};
+
+#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum GamePhase {
+    #[default]
+    Ready,
+    Flipping,
+    Settled,
+}
 
 #[wasm_bindgen]
 pub fn start_game(canvas_selector: &str) {
@@ -9,99 +33,110 @@ pub fn start_game(canvas_selector: &str) {
     let selector = canvas_selector.to_string();
 
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Flip the Table".into(),
-                canvas: Some(selector),
-                resolution: WindowResolution::new(960, 540),
-                fit_canvas_to_parent: true,
-                prevent_default_event_handling: true,
-                present_mode: PresentMode::AutoVsync,
+        .add_plugins((
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Flip the Table".into(),
+                    canvas: Some(selector),
+                    resolution: WindowResolution::new(960, 540),
+                    fit_canvas_to_parent: true,
+                    prevent_default_event_handling: true,
+                    present_mode: PresentMode::AutoVsync,
+                    ..default()
+                }),
                 ..default()
             }),
-            ..default()
-        }))
+            PhysicsPlugins::default(),
+        ))
+        .init_state::<GamePhase>()
         .insert_resource(ClearColor(Color::srgb(0.08, 0.09, 0.12)))
-        .add_systems(Startup, (setup_scene, setup_hud, notify_js_ready))
-        .add_systems(Update, spin_preview_desk)
+        .init_resource::<FlipTracker>()
+        .init_resource::<CameraRig>()
+        .init_resource::<ScoreState>()
+        .init_resource::<PendingPopups>()
+        .init_resource::<HudState>()
+        .add_systems(Startup, (setup_camera_and_lights, setup_initial_scene, setup_hud, notify_js_ready))
+        .add_systems(
+            Update,
+            (
+                handle_flip_gesture.run_if(in_state(GamePhase::Ready)),
+                (process_destruction, check_run_settled).run_if(in_state(GamePhase::Flipping)),
+                update_debris_lifetime,
+                update_follow_camera,
+                spawn_score_popups,
+                animate_score_popups,
+                update_hud,
+                handle_retry_input,
+            ),
+        )
         .run();
 }
 
-#[derive(Component)]
-struct PreviewDesk;
-
-fn setup_scene(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    // Simple office floor
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(12.0, 12.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.22, 0.24, 0.28),
-            perceptual_roughness: 0.9,
-            ..default()
-        })),
-    ));
-
-    // Placeholder low-poly desk
-    commands.spawn((
-        PreviewDesk,
-        Mesh3d(meshes.add(Cuboid::new(2.0, 0.12, 1.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.62, 0.41, 0.24),
-            perceptual_roughness: 0.7,
-            ..default()
-        })),
-        Transform::from_xyz(0.0, 0.85, 0.0),
-    ));
-
-    // Key light
+fn setup_camera_and_lights(mut commands: Commands, rig: Res<CameraRig>) {
+    // Warm sunlit directional light
     commands.spawn((
         DirectionalLight {
-            illuminance: 8_000.0,
+            illuminance: 10_500.0,
+            color: Color::srgb(1.0, 0.94, 0.80),
             shadow_maps_enabled: true,
             ..default()
         },
-        Transform::from_xyz(3.0, 6.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(3.5, 6.5, 3.5).looking_at(Vec3::new(0.0, 0.6, -2.0), Vec3::Y),
     ));
 
     // Seated PoV camera
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(0.0, 1.65, 2.4).looking_at(Vec3::new(0.0, 0.9, -1.0), Vec3::Y),
+        Transform::from_translation(rig.seated_pos).looking_at(rig.seated_look, Vec3::Y),
     ));
 }
 
-fn setup_hud(mut commands: Commands) {
-    commands
-        .spawn(Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(16.0),
-            left: Val::Px(16.0),
-            padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
-            border: UiRect::all(Val::Px(2.0)),
-            ..default()
-        })
-        .insert(BackgroundColor(Color::srgba(0.05, 0.06, 0.09, 0.85)))
-        .insert(BorderColor::all(Color::srgb(0.95, 0.75, 0.25)))
-        .with_children(|parent| {
-            parent.spawn((
-                Text::new("FLIP THE TABLE // WASM + BEVY READY"),
-                TextFont {
-                    font_size: FontSize::Px(16.0),
-                    ..default()
-                },
-                TextColor(Color::srgb(0.98, 0.94, 0.82)),
-            ));
-        });
+fn setup_initial_scene(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    spawn_office_scenario(&mut commands, &mut meshes, &mut materials);
 }
 
-fn spin_preview_desk(time: Res<Time>, mut query: Query<&mut Transform, With<PreviewDesk>>) {
-    for mut transform in &mut query {
-        transform.rotate_y(time.delta_secs() * 0.45);
+#[allow(deprecated)]
+fn handle_retry_input(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    btn_q: Query<&Interaction, (Changed<Interaction>, With<RetryButton>)>,
+    scenario_q: Query<Entity, With<ScenarioEntity>>,
+    popup_q: Query<Entity, With<FloatingPopup>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut tracker: ResMut<FlipTracker>,
+    mut rig: ResMut<CameraRig>,
+    mut score: ResMut<ScoreState>,
+    mut popups: ResMut<PendingPopups>,
+    mut hud_state: ResMut<HudState>,
+    mut virtual_time: ResMut<Time<Virtual>>,
+    mut next_state: ResMut<NextState<GamePhase>>,
+) {
+    let clicked_retry = btn_q.iter().any(|i| *i == Interaction::Pressed);
+    if !keys.just_pressed(KeyCode::KeyR) && !clicked_retry {
+        return;
     }
+
+    for entity in &scenario_q {
+        commands.entity(entity).despawn();
+    }
+    for entity in &popup_q {
+        commands.entity(entity).despawn();
+    }
+
+    tracker.reset();
+    rig.reset();
+    score.reset();
+    popups.0.clear();
+    hud_state.displayed_score = 0.0;
+    virtual_time.set_relative_speed(1.0);
+
+    spawn_office_scenario(&mut commands, &mut meshes, &mut materials);
+    next_state.set(GamePhase::Ready);
 }
 
 fn notify_js_ready() {
