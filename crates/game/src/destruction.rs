@@ -1,6 +1,7 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
+use crate::audio::{RetroAudio, SoundEffect};
 use crate::flip::CameraRig;
 use crate::scene::{DebrisStyle, DestructibleProp, ScenarioEntity};
 use crate::GamePhase;
@@ -56,6 +57,7 @@ pub fn process_destruction(
     mut score: ResMut<ScoreState>,
     mut popups: ResMut<PendingPopups>,
     mut camera_rig: ResMut<CameraRig>,
+    mut audio: ResMut<RetroAudio>,
     mut prop_q: Query<(Entity, &Transform, &LinearVelocity, &mut DestructibleProp)>,
 ) {
     let dt = time.delta_secs();
@@ -91,6 +93,7 @@ pub fn process_destruction(
                 score.total_score += pts;
                 score.slowmo_timer = score.slowmo_timer.max(0.22);
                 camera_rig.add_trauma(0.16);
+                audio.push(SoundEffect::Topple);
                 popups.0.push(PopupSpawn {
                     world_pos: tf.translation + Vec3::Y * 0.7,
                     text: format!("+{pts} TOPPLED!"),
@@ -116,6 +119,7 @@ pub fn process_destruction(
             score.total_score += pts;
             score.hitstop_timer = score.hitstop_timer.max(0.03);
             camera_rig.add_trauma(0.28);
+            audio.push(SoundEffect::Shatter(prop.debris_style));
 
             let label = if mult > 1 {
                 format!("+{pts} {} x{mult}!", prop.label)
@@ -209,6 +213,7 @@ pub fn process_destruction(
             let pts = 50;
             score.total_score += pts;
             camera_rig.add_trauma(0.12);
+            audio.push(SoundEffect::Crack);
             popups.0.push(PopupSpawn {
                 world_pos: tf.translation + Vec3::Y * 0.35,
                 text: format!("+{pts} CRACKED!"),

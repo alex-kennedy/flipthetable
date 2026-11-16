@@ -1,3 +1,4 @@
+mod audio;
 mod destruction;
 mod flip;
 mod hud;
@@ -9,6 +10,7 @@ use bevy::prelude::*;
 use bevy::window::{PresentMode, WindowResolution};
 use wasm_bindgen::prelude::*;
 
+use audio::{flush_audio_queue, RetroAudio};
 use destruction::{
     check_run_settled, process_destruction, update_debris_lifetime, PendingPopups, ScoreState,
 };
@@ -57,6 +59,7 @@ pub fn start_game(canvas_selector: &str) {
         .init_resource::<ScoreState>()
         .init_resource::<PendingPopups>()
         .init_resource::<HudState>()
+        .init_resource::<RetroAudio>()
         .add_systems(
             Startup,
             (
@@ -76,6 +79,7 @@ pub fn start_game(canvas_selector: &str) {
                 spawn_score_popups,
                 animate_score_popups,
                 update_hud,
+                flush_audio_queue,
                 handle_retry_input,
             ),
         )

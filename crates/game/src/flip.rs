@@ -4,6 +4,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
+use crate::audio::{RetroAudio, SoundEffect};
 use crate::scene::PlayerDesk;
 use crate::GamePhase;
 
@@ -116,6 +117,7 @@ pub fn handle_flip_gesture(
     mut desk_q: Query<(&mut LinearVelocity, &mut AngularVelocity), With<PlayerDesk>>,
     mut next_state: ResMut<NextState<GamePhase>>,
     mut camera_rig: ResMut<CameraRig>,
+    mut audio: ResMut<RetroAudio>,
 ) {
     let Ok(window) = windows.single() else {
         return;
@@ -171,6 +173,7 @@ pub fn handle_flip_gesture(
                 );
             }
             camera_rig.add_trauma(0.28 + power * 0.25);
+            audio.push(SoundEffect::FlipLaunch(power));
             next_state.set(GamePhase::Flipping);
         }
         tracker.live_power = 0.0;
