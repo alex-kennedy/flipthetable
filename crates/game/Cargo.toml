@@ -1,0 +1,38 @@
+[package]
+name = "flipthetable-game"
+version = "0.1.0"
+edition = "2024"
+description = "Bevy WASM core for Flip the Table"
+repository = "https://github.com/alex-kennedy/flipthetable"
+license = "MIT"
+
+[lib]
+name = "flipthetable_game"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bevy = { version = "0.20", default-features = false, features = [
+    "bevy_asset",
+    "bevy_audio",
+    "bevy_color",
+    "bevy_core_pipeline",
+    "bevy_log",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_scene",
+    "bevy_sprite",
+    "bevy_state",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_window",
+    "bevy_winit",
+    "default_font",
+    "tonemapping_luts",
+    "webgl2",
+    "zstd_rust",
+] }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Window", "Document", "CustomEvent", "CustomEventInit"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+console_error_panic_hook = "0.1"
