@@ -23,8 +23,9 @@ rustc-ice-*.txt
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Notes scratch pad.
-./plans
+# Notes scratch pad & plans.
+notes/
+plans/
 
 # Next.js / Node / WASM build outputs
 web/node_modules
