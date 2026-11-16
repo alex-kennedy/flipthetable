@@ -127,6 +127,8 @@ pub fn spawn_scenario(
 fn spawn_room_bounds(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    textures: &ProceduralTextures,
     floor_mat: Handle<StandardMaterial>,
     wall_mat: Handle<StandardMaterial>,
     trim_mat: Handle<StandardMaterial>,
@@ -142,6 +144,20 @@ fn spawn_room_bounds(
         Mesh3d(meshes.add(Cuboid::new(12.0, 0.4, 12.0))),
         MeshMaterial3d(floor_mat),
         Transform::from_xyz(0.0, -0.2, -1.0),
+    ));
+
+    // Acoustic tile ceiling
+    let ceiling_mat = materials.add(StandardMaterial {
+        base_color_texture: Some(textures.ceiling_tile.clone()),
+        uv_transform: Affine2::from_scale(Vec2::splat(8.0)),
+        perceptual_roughness: 0.9,
+        ..default()
+    });
+    commands.spawn((
+        ScenarioEntity,
+        Mesh3d(meshes.add(Cuboid::new(12.0, 0.2, 12.0))),
+        MeshMaterial3d(ceiling_mat),
+        Transform::from_xyz(0.0, 4.35, -1.0),
     ));
 
     // Back wall + baseboard
@@ -201,13 +217,47 @@ fn spawn_room_bounds(
         ));
     }
 
-    // Ceiling fluorescent light strips
+    // Subtle sunlit floor reflection strips beneath window
+    let sun_floor_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 0.88, 0.52, 0.16),
+        emissive: LinearRgba::rgb(0.25, 0.20, 0.08),
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    for i in 0..3 {
+        commands.spawn((
+            ScenarioEntity,
+            Mesh3d(meshes.add(Cuboid::new(3.4, 0.006, 0.35))),
+            MeshMaterial3d(sun_floor_mat.clone()),
+            Transform::from_xyz(0.0, 0.004, -5.2 + i as f32 * 0.65),
+        ));
+    }
+
+    // Wall clock above window
+    let clock_face = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.95, 0.94, 0.88),
+        ..default()
+    });
+    commands.spawn((
+        ScenarioEntity,
+        Mesh3d(meshes.add(Cylinder::new(0.28, 0.06))),
+        MeshMaterial3d(clock_face),
+        Transform::from_xyz(2.8, 3.15, -6.25)
+            .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+    ));
+
+    // Ceiling fluorescent light panels (glowing!)
+    let fluor_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.96, 0.99, 1.0),
+        emissive: LinearRgba::rgb(1.4, 1.45, 1.5),
+        ..default()
+    });
     for fz in [-1.2_f32, -4.0_f32] {
         commands.spawn((
             ScenarioEntity,
-            Mesh3d(meshes.add(Cuboid::new(2.2, 0.06, 0.45))),
-            MeshMaterial3d(trim_mat.clone()),
-            Transform::from_xyz(0.0, 4.15, fz),
+            Mesh3d(meshes.add(Cuboid::new(2.4, 0.06, 0.55))),
+            MeshMaterial3d(fluor_mat.clone()),
+            Transform::from_xyz(0.0, 4.22, fz),
         ));
     }
 }
@@ -226,7 +276,8 @@ pub fn spawn_office_scenario(
         ..default()
     });
     let wall_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.80, 0.77, 0.70),
+        base_color_texture: Some(textures.wall_grid.clone()),
+        uv_transform: Affine2::from_scale(Vec2::new(6.0, 2.5)),
         perceptual_roughness: 0.9,
         ..default()
     });
@@ -244,6 +295,8 @@ pub fn spawn_office_scenario(
     spawn_room_bounds(
         commands,
         meshes,
+        materials,
+        textures,
         floor_mat,
         wall_mat,
         trim_mat.clone(),
@@ -807,6 +860,139 @@ pub fn spawn_office_scenario(
                 Transform::from_xyz(0.0, 0.02, 0.20),
             ));
         });
+
+    // Office Printer / Copier Station (left-midground)
+    let printer_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.84, 0.84, 0.80),
+        perceptual_roughness: 0.55,
+        ..default()
+    });
+    let led_green = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.2, 0.95, 0.45),
+        emissive: LinearRgba::rgb(0.3, 1.5, 0.5),
+        ..default()
+    });
+    commands
+        .spawn((
+            ScenarioEntity,
+            DestructibleProp::tall(
+                "PC LOAD LETTER!",
+                420,
+                Color::srgb(0.86, 0.86, 0.82),
+                DebrisStyle::Electronics,
+            ),
+            RigidBody::Dynamic,
+            Mass(11.0),
+            Restitution::new(0.50),
+            Friction::new(0.28),
+            LinearDamping(0.09),
+            AngularDamping(0.09),
+            Collider::cuboid(0.68, 0.92, 0.60),
+            Mesh3d(meshes.add(Cuboid::new(0.68, 0.52, 0.60))),
+            MeshMaterial3d(printer_mat.clone()),
+            Transform::from_xyz(-2.35, 0.55, -2.85),
+        ))
+        .with_children(|pr| {
+            pr.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.56, 0.40, 0.48))),
+                MeshMaterial3d(trim_mat.clone()),
+                Transform::from_xyz(0.0, -0.36, 0.0),
+            ));
+            pr.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.06, 0.04, 0.04))),
+                MeshMaterial3d(led_green),
+                Transform::from_xyz(0.22, 0.16, 0.30),
+            ));
+        });
+
+    // Office Bookshelf with colorful manuals (back-right)
+    let shelf_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.52, 0.34, 0.18),
+        perceptual_roughness: 0.75,
+        ..default()
+    });
+    let book_colors = [
+        Color::srgb(0.85, 0.25, 0.25),
+        Color::srgb(0.22, 0.55, 0.85),
+        Color::srgb(0.92, 0.72, 0.20),
+    ];
+    commands
+        .spawn((
+            ScenarioEntity,
+            DestructibleProp::tall(
+                "SYNERGY MANUALS!",
+                480,
+                Color::srgb(0.62, 0.40, 0.22),
+                DebrisStyle::Papers,
+            ),
+            RigidBody::Dynamic,
+            Mass(14.0),
+            Restitution::new(0.45),
+            Friction::new(0.30),
+            LinearDamping(0.09),
+            AngularDamping(0.09),
+            Collider::cuboid(1.1, 1.65, 0.42),
+            Mesh3d(meshes.add(Cuboid::new(1.1, 1.65, 0.42))),
+            MeshMaterial3d(shelf_mat),
+            Transform::from_xyz(2.65, 0.83, -4.65),
+        ))
+        .with_children(|bs| {
+            for (row_idx, by) in [-0.35_f32, 0.15, 0.55].iter().enumerate() {
+                let bm = materials.add(StandardMaterial {
+                    base_color: book_colors[row_idx % book_colors.len()],
+                    perceptual_roughness: 0.7,
+                    ..default()
+                });
+                bs.spawn((
+                    Mesh3d(meshes.add(Cuboid::new(0.86, 0.24, 0.28))),
+                    MeshMaterial3d(bm),
+                    Transform::from_xyz(0.0, *by, 0.08),
+                ));
+            }
+        });
+
+    // Potted Office Fern (right-midground)
+    let fern_pot = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.82, 0.42, 0.24),
+        perceptual_roughness: 0.8,
+        ..default()
+    });
+    let fern_leaf = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.20, 0.66, 0.32),
+        perceptual_roughness: 0.75,
+        ..default()
+    });
+    commands
+        .spawn((
+            ScenarioEntity,
+            DestructibleProp::tall(
+                "OFFICE FERN!",
+                240,
+                Color::srgb(0.24, 0.68, 0.34),
+                DebrisStyle::Ceramic,
+            ),
+            RigidBody::Dynamic,
+            Mass(4.0),
+            Restitution::new(0.52),
+            Friction::new(0.28),
+            LinearDamping(0.09),
+            AngularDamping(0.09),
+            Collider::cylinder(0.22, 0.85),
+            Transform::from_xyz(2.45, 0.44, -2.55),
+            Visibility::default(),
+        ))
+        .with_children(|pl| {
+            pl.spawn((
+                Mesh3d(meshes.add(Cylinder::new(0.20, 0.38))),
+                MeshMaterial3d(fern_pot),
+                Transform::from_xyz(0.0, -0.22, 0.0),
+            ));
+            pl.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.48, 0.42, 0.48))),
+                MeshMaterial3d(fern_leaf),
+                Transform::from_xyz(0.0, 0.18, 0.0),
+            ));
+        });
 }
 
 pub fn spawn_building_site_scenario(
@@ -823,12 +1009,15 @@ pub fn spawn_building_site_scenario(
         ..default()
     });
     let wall_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.62, 0.66, 0.64),
+        base_color_texture: Some(textures.wall_grid.clone()),
+        uv_transform: Affine2::from_scale(Vec2::new(6.0, 2.5)),
+        base_color: Color::srgb(0.75, 0.80, 0.78),
         perceptual_roughness: 0.78,
         ..default()
     });
     let hazard_trim_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.95, 0.72, 0.14),
+        base_color_texture: Some(textures.hazard_stripe.clone()),
+        uv_transform: Affine2::from_scale(Vec2::new(24.0, 1.0)),
         perceptual_roughness: 0.6,
         ..default()
     });
@@ -841,6 +1030,8 @@ pub fn spawn_building_site_scenario(
     spawn_room_bounds(
         commands,
         meshes,
+        materials,
+        textures,
         floor_mat,
         wall_mat,
         hazard_trim_mat.clone(),
@@ -1051,9 +1242,9 @@ pub fn spawn_building_site_scenario(
         });
 
     // ── Room Targets ───────────────────────────────────────────────────────
-    // Whiteboard on wheels
+    // Whiteboard on wheels (with doodle texture!)
     let board_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.94, 0.96, 0.98),
+        base_color_texture: Some(textures.whiteboard_doodle.clone()),
         perceptual_roughness: 0.4,
         ..default()
     });
@@ -1166,4 +1357,58 @@ pub fn spawn_building_site_scenario(
             Transform::from_xyz(tx, 0.22, tz),
         ));
     }
+
+    // Paint Cans & Step Ladder
+    let paint_colors = [
+        Color::srgb(0.22, 0.62, 0.96),
+        Color::srgb(0.96, 0.32, 0.22),
+        Color::srgb(0.98, 0.80, 0.18),
+    ];
+    for (idx, (px, pz)) in [(-2.0, -2.5), (-1.7, -2.65), (2.1, -3.1)].iter().enumerate() {
+        let pm = materials.add(StandardMaterial {
+            base_color: paint_colors[idx % paint_colors.len()],
+            perceptual_roughness: 0.4,
+            ..default()
+        });
+        commands.spawn((
+            ScenarioEntity,
+            DestructibleProp::small(
+                "PAINT SPLATTER!",
+                190,
+                paint_colors[idx % paint_colors.len()],
+                DebrisStyle::Water,
+            ),
+            RigidBody::Dynamic,
+            Mass(2.2),
+            Restitution::new(0.58),
+            Friction::new(0.26),
+            LinearDamping(0.08),
+            AngularDamping(0.08),
+            Collider::cylinder(0.14, 0.28),
+            Mesh3d(meshes.add(Cylinder::new(0.14, 0.28))),
+            MeshMaterial3d(pm),
+            Transform::from_xyz(*px, 0.15, *pz),
+        ));
+    }
+
+    // Aluminum Step Ladder
+    commands.spawn((
+        ScenarioEntity,
+        DestructibleProp::tall(
+            "STEP LADDER!",
+            340,
+            Color::srgb(0.75, 0.78, 0.82),
+            DebrisStyle::Generic,
+        ),
+        RigidBody::Dynamic,
+        Mass(7.0),
+        Restitution::new(0.52),
+        Friction::new(0.26),
+        LinearDamping(0.08),
+        AngularDamping(0.08),
+        Collider::cuboid(0.55, 1.35, 0.55),
+        Mesh3d(meshes.add(Cuboid::new(0.55, 1.35, 0.14))),
+        MeshMaterial3d(steel_mat),
+        Transform::from_xyz(2.35, 0.68, -4.15).with_rotation(Quat::from_rotation_y(-0.4)),
+    ));
 }

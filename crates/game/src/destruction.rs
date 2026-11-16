@@ -6,6 +6,12 @@ use crate::flip::CameraRig;
 use crate::scene::{DebrisStyle, DestructibleProp, ScenarioEntity};
 use crate::GamePhase;
 
+#[derive(Clone)]
+pub struct ScoreFeedEntry {
+    pub text: String,
+    pub age: f32,
+}
+
 #[derive(Resource, Default)]
 pub struct ScoreState {
     pub total_score: u32,
@@ -18,6 +24,8 @@ pub struct ScoreState {
     pub settle_timer: f32,
     pub slowmo_timer: f32,
     pub hitstop_timer: f32,
+    pub score_pulse: f32,
+    pub recent_feed: Vec<ScoreFeedEntry>,
 }
 
 impl ScoreState {
@@ -30,6 +38,13 @@ impl ScoreState {
         self.max_combo = self.max_combo.max(self.combo);
         self.combo_timer = 2.0;
         self.combo
+    }
+
+    pub fn record_points(&mut self, pts: u32, label: String) {
+        self.total_score += pts;
+        self.score_pulse = 1.0;
+        self.recent_feed.insert(0, ScoreFeedEntry { text: label, age: 0.0 });
+        self.recent_feed.truncate(4);
     }
 }
 
@@ -70,6 +85,11 @@ pub fn process_destruction(
 ) {
     let dt = time.delta_secs();
     score.elapsed_since_flip += dt;
+    score.score_pulse = (score.score_pulse - dt * 3.5).max(0.0);
+    for entry in &mut score.recent_feed {
+        entry.age += dt;
+    }
+    score.recent_feed.retain(|e| e.age < 2.5);
 
     if score.combo_timer > 0.0 {
         score.combo_timer -= dt;
@@ -98,13 +118,14 @@ pub fn process_destruction(
                 score.items_toppled += 1;
                 let mult = score.bump_combo();
                 let pts = 75 * mult;
-                score.total_score += pts;
+                let msg = format!("+{pts} {} TOPPLED!", prop.label);
+                score.record_points(pts, msg.clone());
                 score.slowmo_timer = score.slowmo_timer.max(0.22);
                 camera_rig.add_trauma(0.16);
                 audio.push(SoundEffect::Topple);
                 popups.0.push(PopupSpawn {
                     world_pos: tf.translation + Vec3::Y * 0.7,
-                    text: format!("+{pts} TOPPLED!"),
+                    text: msg,
                     color: Color::srgb(0.55, 0.92, 0.98),
                     big: false,
                 });
@@ -124,16 +145,15 @@ pub fn process_destruction(
             score.items_destroyed += 1;
             let mult = score.bump_combo();
             let pts = prop.base_points * mult;
-            score.total_score += pts;
-            score.hitstop_timer = score.hitstop_timer.max(0.03);
-            camera_rig.add_trauma(0.28);
-            audio.push(SoundEffect::Shatter(prop.debris_style));
-
             let label = if mult > 1 {
                 format!("+{pts} {} x{mult}!", prop.label)
             } else {
                 format!("+{pts} {}!", prop.label)
             };
+            score.record_points(pts, label.clone());
+            score.hitstop_timer = score.hitstop_timer.max(0.03);
+            camera_rig.add_trauma(0.28);
+            audio.push(SoundEffect::Shatter(prop.debris_style));
 
             popups.0.push(PopupSpawn {
                 world_pos: tf.translation + Vec3::Y * 0.45,
@@ -142,61 +162,81 @@ pub fn process_destruction(
                 big: true,
             });
 
-            // Spawn style-specific low-poly debris chunks
-            let (debris_mesh, debris_damping, debris_restitution, is_emissive) =
+            // Spawn style-specific multi-part low-poly debris chunks
+            let (primary_mesh, secondary_mesh, debris_damping, debris_restitution, is_emissive) =
                 match prop.debris_style {
                     DebrisStyle::Papers => (
-                        meshes.add(Cuboid::new(0.22, 0.012, 0.28)),
-                        1.8,
+                        meshes.add(Cuboid::new(0.26, 0.012, 0.34)),
+                        meshes.add(Cuboid::new(0.22, 0.010, 0.28)),
+                        1.85,
                         0.2,
                         false,
                     ),
                     DebrisStyle::Water => (
                         meshes.add(Cuboid::new(0.11, 0.11, 0.11)),
+                        meshes.add(Cuboid::new(0.22, 0.14, 0.18)),
                         0.08,
                         0.72,
                         true,
                     ),
                     DebrisStyle::Electronics => (
-                        meshes.add(Cuboid::new(0.15, 0.10, 0.14)),
+                        meshes.add(Cuboid::new(0.24, 0.16, 0.05)),
+                        meshes.add(Cuboid::new(0.18, 0.14, 0.18)),
                         0.08,
                         0.58,
                         true,
                     ),
                     DebrisStyle::Ceramic => (
-                        meshes.add(Cuboid::new(0.09, 0.07, 0.09)),
+                        meshes.add(Cuboid::new(0.11, 0.04, 0.09)),
+                        meshes.add(Cuboid::new(0.07, 0.07, 0.07)),
                         0.08,
                         0.62,
                         false,
                     ),
                     DebrisStyle::Generic => (
-                        meshes.add(Cuboid::new(0.16, 0.11, 0.16)),
+                        meshes.add(Cuboid::new(0.26, 0.08, 0.14)),
+                        meshes.add(Cuboid::new(0.14, 0.14, 0.14)),
                         0.08,
-                        0.55,
+                        0.56,
                         false,
                     ),
                 };
 
-            let debris_mat = materials.add(StandardMaterial {
+            let primary_mat = materials.add(StandardMaterial {
                 base_color: prop.debris_color,
                 emissive: if is_emissive {
-                    prop.debris_color.to_linear() * 0.35
+                    prop.debris_color.to_linear() * 0.45
                 } else {
                     LinearRgba::BLACK
                 },
-                perceptual_roughness: 0.7,
+                perceptual_roughness: 0.65,
+                ..default()
+            });
+            let secondary_mat = materials.add(StandardMaterial {
+                base_color: match prop.debris_style {
+                    DebrisStyle::Electronics => Color::srgb(0.84, 0.80, 0.70),
+                    DebrisStyle::Water => Color::srgb(0.92, 0.94, 0.96),
+                    DebrisStyle::Ceramic => Color::srgb(0.28, 0.16, 0.09),
+                    _ => prop.debris_color,
+                },
+                perceptual_roughness: 0.72,
                 ..default()
             });
 
-            let count = prop.debris_count.max(4);
+            let count = match prop.debris_style {
+                DebrisStyle::Papers => 12,
+                DebrisStyle::Water => 11,
+                _ => prop.debris_count.max(6),
+            };
             for i in 0..count {
                 let angle = (i as f32 / count as f32) * std::f32::consts::TAU;
                 let up_boost = if prop.debris_style == DebrisStyle::Papers {
-                    3.2 + (i % 4) as f32 * 0.7
+                    3.4 + (i % 4) as f32 * 0.75
                 } else {
-                    2.6 + (i % 3) as f32 * 1.1
+                    2.7 + (i % 3) as f32 * 1.15
                 };
-                let spread = Vec3::new(angle.cos() * 3.4, up_boost, angle.sin() * 3.4);
+                let spread = Vec3::new(angle.cos() * 3.6, up_boost, angle.sin() * 3.6);
+                let use_secondary = i % 3 == 0;
                 commands.spawn((
                     ScenarioEntity,
                     DebrisChunk { ttl: 5.5 },
@@ -207,11 +247,19 @@ pub fn process_destruction(
                     LinearDamping(debris_damping),
                     AngularDamping(0.10),
                     Collider::cuboid(0.12, 0.08, 0.12),
-                    Mesh3d(debris_mesh.clone()),
-                    MeshMaterial3d(debris_mat.clone()),
+                    Mesh3d(if use_secondary {
+                        secondary_mesh.clone()
+                    } else {
+                        primary_mesh.clone()
+                    }),
+                    MeshMaterial3d(if use_secondary {
+                        secondary_mat.clone()
+                    } else {
+                        primary_mat.clone()
+                    }),
                     Transform::from_translation(tf.translation + Vec3::Y * 0.18),
                     LinearVelocity(lin_vel.0 * 0.45 + spread),
-                    AngularVelocity(Vec3::new(angle * 4.0, 5.5, -angle * 3.5)),
+                    AngularVelocity(Vec3::new(angle * 4.2, 5.8, -angle * 3.8)),
                 ));
             }
 
@@ -262,12 +310,13 @@ pub fn process_destruction(
         } else if !prop.damaged && !prop.shattered && delta_v >= prop.damage_impulse {
             prop.damaged = true;
             let pts = 50;
-            score.total_score += pts;
+            let msg = format!("+{pts} {} CRACKED!", prop.label);
+            score.record_points(pts, msg.clone());
             camera_rig.add_trauma(0.12);
             audio.push(SoundEffect::Crack);
             popups.0.push(PopupSpawn {
                 world_pos: tf.translation + Vec3::Y * 0.35,
-                text: format!("+{pts} CRACKED!"),
+                text: msg,
                 color: Color::srgb(0.98, 0.48, 0.38),
                 big: false,
             });
