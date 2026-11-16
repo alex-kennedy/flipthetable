@@ -1,11 +1,23 @@
 use avian3d::prelude::*;
+use bevy::math::Affine2;
 use bevy::prelude::*;
+
+use crate::pixel_art::ProceduralTextures;
 
 #[derive(Component)]
 pub struct ScenarioEntity;
 
 #[derive(Component)]
 pub struct PlayerDesk;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DebrisStyle {
+    Generic,
+    Papers,
+    Water,
+    Electronics,
+    Ceramic,
+}
 
 #[derive(Component, Clone)]
 pub struct DestructibleProp {
@@ -18,12 +30,18 @@ pub struct DestructibleProp {
     pub damage_impulse: f32,
     pub break_impulse: f32,
     pub debris_color: Color,
+    pub debris_style: DebrisStyle,
     pub debris_count: u8,
     pub prev_velocity: Vec3,
 }
 
 impl DestructibleProp {
-    pub fn small(label: &'static str, base_points: u32, debris_color: Color) -> Self {
+    pub fn small(
+        label: &'static str,
+        base_points: u32,
+        debris_color: Color,
+        debris_style: DebrisStyle,
+    ) -> Self {
         Self {
             label,
             base_points,
@@ -31,15 +49,21 @@ impl DestructibleProp {
             toppled: false,
             damaged: false,
             shattered: false,
-            damage_impulse: 2.2,
-            break_impulse: 4.5,
+            damage_impulse: 1.4,
+            break_impulse: 2.6,
             debris_color,
-            debris_count: 5,
+            debris_style,
+            debris_count: 6,
             prev_velocity: Vec3::ZERO,
         }
     }
 
-    pub fn tall(label: &'static str, base_points: u32, debris_color: Color) -> Self {
+    pub fn tall(
+        label: &'static str,
+        base_points: u32,
+        debris_color: Color,
+        debris_style: DebrisStyle,
+    ) -> Self {
         Self {
             label,
             base_points,
@@ -47,10 +71,11 @@ impl DestructibleProp {
             toppled: false,
             damaged: false,
             shattered: false,
-            damage_impulse: 3.5,
-            break_impulse: 7.5,
+            damage_impulse: 2.2,
+            break_impulse: 4.5,
             debris_color,
-            debris_count: 7,
+            debris_style,
+            debris_count: 8,
             prev_velocity: Vec3::ZERO,
         }
     }
@@ -60,96 +85,138 @@ pub fn spawn_office_scenario(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    textures: &ProceduralTextures,
 ) {
     // ── Room Static Geometry ───────────────────────────────────────────────
     let floor_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.20, 0.23, 0.28),
-        perceptual_roughness: 0.92,
+        base_color_texture: Some(textures.carpet.clone()),
+        uv_transform: Affine2::from_scale(Vec2::splat(10.0)),
+        perceptual_roughness: 0.9,
         ..default()
     });
     let wall_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.78, 0.76, 0.70),
+        base_color: Color::srgb(0.80, 0.77, 0.70),
         perceptual_roughness: 0.9,
         ..default()
     });
     let trim_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.25, 0.29, 0.35),
-        perceptual_roughness: 0.85,
+        base_color: Color::srgb(0.20, 0.24, 0.30),
+        perceptual_roughness: 0.8,
         ..default()
     });
 
-    // Floor
+    // Floor (bouncy enough for satisfying ricochets)
     commands.spawn((
         ScenarioEntity,
         RigidBody::Static,
+        Restitution::new(0.45),
+        Friction::new(0.30),
         Collider::cuboid(12.0, 0.4, 12.0),
         Mesh3d(meshes.add(Cuboid::new(12.0, 0.4, 12.0))),
         MeshMaterial3d(floor_mat),
         Transform::from_xyz(0.0, -0.2, -1.0),
     ));
 
-    // Back wall
+    // Back wall + baseboard
     commands.spawn((
         ScenarioEntity,
         RigidBody::Static,
+        Restitution::new(0.55),
+        Friction::new(0.25),
         Collider::cuboid(12.0, 4.5, 0.4),
         Mesh3d(meshes.add(Cuboid::new(12.0, 4.5, 0.4))),
         MeshMaterial3d(wall_mat.clone()),
         Transform::from_xyz(0.0, 2.25, -6.5),
     ));
+    commands.spawn((
+        ScenarioEntity,
+        Mesh3d(meshes.add(Cuboid::new(12.0, 0.18, 0.06))),
+        MeshMaterial3d(trim_mat.clone()),
+        Transform::from_xyz(0.0, 0.09, -6.28),
+    ));
 
-    // Left & Right walls
+    // Left & Right walls + baseboards
     for x in [-5.5_f32, 5.5_f32] {
         commands.spawn((
             ScenarioEntity,
             RigidBody::Static,
+            Restitution::new(0.55),
+            Friction::new(0.25),
             Collider::cuboid(0.4, 4.5, 12.0),
             Mesh3d(meshes.add(Cuboid::new(0.4, 4.5, 12.0))),
             MeshMaterial3d(wall_mat.clone()),
             Transform::from_xyz(x, 2.25, -1.0),
         ));
+        let inner_x = if x < 0.0 { x + 0.21 } else { x - 0.21 };
+        commands.spawn((
+            ScenarioEntity,
+            Mesh3d(meshes.add(Cuboid::new(0.06, 0.18, 12.0))),
+            MeshMaterial3d(trim_mat.clone()),
+            Transform::from_xyz(inner_x, 0.09, -1.0),
+        ));
     }
 
-    // Back window frame accent (warm sunlit blinds)
+    // Back window with Venetian blind slats
     let window_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.98, 0.85, 0.48),
-        emissive: LinearRgba::rgb(0.65, 0.50, 0.20),
+        base_color: Color::srgb(1.0, 0.86, 0.48),
+        emissive: LinearRgba::rgb(0.85, 0.64, 0.25),
         ..default()
     });
     commands.spawn((
         ScenarioEntity,
-        Mesh3d(meshes.add(Cuboid::new(3.4, 1.8, 0.08))),
+        Mesh3d(meshes.add(Cuboid::new(3.8, 1.9, 0.06))),
         MeshMaterial3d(window_mat),
-        Transform::from_xyz(0.0, 2.3, -6.26),
+        Transform::from_xyz(0.0, 2.35, -6.27),
     ));
-    commands.spawn((
-        ScenarioEntity,
-        Mesh3d(meshes.add(Cuboid::new(3.6, 0.12, 0.12))),
-        MeshMaterial3d(trim_mat),
-        Transform::from_xyz(0.0, 3.25, -6.24),
-    ));
+    let slat_mesh = meshes.add(Cuboid::new(3.8, 0.04, 0.08));
+    for i in 0..8 {
+        let sy = 1.55 + i as f32 * 0.21;
+        commands.spawn((
+            ScenarioEntity,
+            Mesh3d(slat_mesh.clone()),
+            MeshMaterial3d(trim_mat.clone()),
+            Transform::from_xyz(0.0, sy, -6.22),
+        ));
+    }
+
+    // Ceiling fluorescent light strips
+    let fluor_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.95, 0.98, 1.0),
+        emissive: LinearRgba::rgb(1.1, 1.15, 1.2),
+        ..default()
+    });
+    for fz in [-1.2_f32, -4.0_f32] {
+        commands.spawn((
+            ScenarioEntity,
+            Mesh3d(meshes.add(Cuboid::new(2.2, 0.06, 0.45))),
+            MeshMaterial3d(fluor_mat.clone()),
+            Transform::from_xyz(0.0, 4.15, fz),
+        ));
+    }
 
     // ── Player's Oak Desk ──────────────────────────────────────────────────
     let oak_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.62, 0.38, 0.19),
-        perceptual_roughness: 0.72,
+        base_color_texture: Some(textures.wood.clone()),
+        uv_transform: Affine2::from_scale(Vec2::new(2.0, 1.0)),
+        perceptual_roughness: 0.68,
         ..default()
     });
     let leg_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.24, 0.26, 0.30),
-        perceptual_roughness: 0.6,
+        base_color: Color::srgb(0.20, 0.22, 0.27),
+        perceptual_roughness: 0.5,
         ..default()
     });
 
-    // Desk top at y = 0.76, thickness 0.08; 4 legs underneath
     commands
         .spawn((
             ScenarioEntity,
             PlayerDesk,
             RigidBody::Dynamic,
-            Mass(24.0),
-            Friction::new(0.45),
-            Restitution::new(0.15),
+            Mass(22.0),
+            Friction::new(0.32),
+            Restitution::new(0.40),
+            LinearDamping(0.08),
+            AngularDamping(0.08),
             Collider::compound(vec![
                 (
                     Vec3::new(0.0, 0.34, 0.0),
@@ -181,13 +248,11 @@ pub fn spawn_office_scenario(
             Visibility::default(),
         ))
         .with_children(|desk| {
-            // Tabletop mesh
             desk.spawn((
                 Mesh3d(meshes.add(Cuboid::new(2.1, 0.08, 1.0))),
                 MeshMaterial3d(oak_mat.clone()),
                 Transform::from_xyz(0.0, 0.34, 0.0),
             ));
-            // 4 legs
             let leg_mesh = meshes.add(Cuboid::new(0.09, 0.68, 0.09));
             for (lx, lz) in [(-0.92, -0.40), (0.92, -0.40), (-0.92, 0.40), (0.92, 0.40)] {
                 desk.spawn((
@@ -199,99 +264,256 @@ pub fn spawn_office_scenario(
         });
 
     // ── Desk Props (y ~ 0.76 tabletop) ─────────────────────────────────────
-    // CRT Monitor
     let crt_case = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.86, 0.82, 0.72),
-        perceptual_roughness: 0.7,
+        base_color: Color::srgb(0.88, 0.84, 0.74),
+        perceptual_roughness: 0.65,
         ..default()
     });
     let crt_screen = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.10, 0.48, 0.46),
-        emissive: LinearRgba::rgb(0.08, 0.42, 0.40),
+        base_color_texture: Some(textures.crt_angry.clone()),
+        emissive: LinearRgba::rgb(0.18, 0.55, 0.52),
+        emissive_texture: Some(textures.crt_angry.clone()),
+        ..default()
+    });
+
+    // CRT Monitor (compound visual: stand + main bezel + rear tube + angry screen)
+    commands
+        .spawn((
+            ScenarioEntity,
+            DestructibleProp::small(
+                "CRT MONITOR",
+                300,
+                Color::srgb(0.20, 0.82, 0.76),
+                DebrisStyle::Electronics,
+            ),
+            RigidBody::Dynamic,
+            Mass(3.8),
+            Restitution::new(0.50),
+            Friction::new(0.30),
+            LinearDamping(0.10),
+            AngularDamping(0.10),
+            Collider::cuboid(0.46, 0.44, 0.42),
+            Transform::from_xyz(-0.28, 0.98, 0.70),
+            Visibility::default(),
+        ))
+        .with_children(|crt| {
+            // Stand
+            crt.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.26, 0.06, 0.24))),
+                MeshMaterial3d(crt_case.clone()),
+                Transform::from_xyz(0.0, -0.19, 0.0),
+            ));
+            // Front bezel
+            crt.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.46, 0.38, 0.24))),
+                MeshMaterial3d(crt_case.clone()),
+                Transform::from_xyz(0.0, 0.02, 0.06),
+            ));
+            // Rear tube taper
+            crt.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.34, 0.28, 0.20))),
+                MeshMaterial3d(crt_case.clone()),
+                Transform::from_xyz(0.0, 0.01, -0.14),
+            ));
+            // Angry glowing screen
+            crt.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.36, 0.28, 0.02))),
+                MeshMaterial3d(crt_screen.clone()),
+                Transform::from_xyz(0.0, 0.02, 0.185),
+            ));
+        });
+
+    // Mechanical Keyboard + keycaps
+    let keycap_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.72, 0.69, 0.62),
+        perceptual_roughness: 0.7,
         ..default()
     });
     commands
         .spawn((
             ScenarioEntity,
-            DestructibleProp::small("CRT MONITOR", 300, Color::srgb(0.20, 0.75, 0.72)),
+            DestructibleProp::small(
+                "KEYBOARD",
+                120,
+                Color::srgb(0.86, 0.83, 0.75),
+                DebrisStyle::Electronics,
+            ),
             RigidBody::Dynamic,
-            Mass(4.5),
-            Collider::cuboid(0.46, 0.42, 0.40),
-            Mesh3d(meshes.add(Cuboid::new(0.46, 0.42, 0.40))),
+            Mass(1.0),
+            Restitution::new(0.55),
+            Friction::new(0.28),
+            LinearDamping(0.10),
+            AngularDamping(0.10),
+            Collider::cuboid(0.48, 0.05, 0.18),
+            Mesh3d(meshes.add(Cuboid::new(0.48, 0.035, 0.18))),
             MeshMaterial3d(crt_case.clone()),
-            Transform::from_xyz(-0.32, 0.98, 0.72),
+            Transform::from_xyz(-0.02, 0.785, 1.08),
         ))
-        .with_children(|crt| {
-            crt.spawn((
-                Mesh3d(meshes.add(Cuboid::new(0.36, 0.28, 0.03))),
-                MeshMaterial3d(crt_screen.clone()),
-                Transform::from_xyz(0.0, 0.02, 0.20),
+        .with_children(|kb| {
+            kb.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.42, 0.02, 0.12))),
+                MeshMaterial3d(keycap_mat),
+                Transform::from_xyz(0.0, 0.022, -0.01),
             ));
         });
 
-    // Mechanical Keyboard
-    commands.spawn((
-        ScenarioEntity,
-        DestructibleProp::small("KEYBOARD", 120, Color::srgb(0.85, 0.82, 0.74)),
-        RigidBody::Dynamic,
-        Mass(1.1),
-        Collider::cuboid(0.48, 0.05, 0.18),
-        Mesh3d(meshes.add(Cuboid::new(0.48, 0.05, 0.18))),
-        MeshMaterial3d(crt_case.clone()),
-        Transform::from_xyz(0.0, 0.79, 1.08),
-    ));
-
-    // Coffee Mug
+    // Coffee Mug (with handle + coffee surface)
     let mug_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.96, 0.94, 0.90),
+        perceptual_roughness: 0.35,
+        ..default()
+    });
+    let coffee_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.24, 0.13, 0.07),
+        perceptual_roughness: 0.2,
+        ..default()
+    });
+    let mut mug_prop = DestructibleProp::small(
+        "COFFEE MUG",
+        150,
+        Color::srgb(0.95, 0.93, 0.88),
+        DebrisStyle::Ceramic,
+    );
+    mug_prop.break_impulse = 1.9;
+    commands
+        .spawn((
+            ScenarioEntity,
+            mug_prop,
+            RigidBody::Dynamic,
+            Mass(0.55),
+            Restitution::new(0.52),
+            Friction::new(0.28),
+            LinearDamping(0.10),
+            AngularDamping(0.10),
+            Collider::cylinder(0.065, 0.13),
+            Mesh3d(meshes.add(Cylinder::new(0.065, 0.13))),
+            MeshMaterial3d(mug_mat.clone()),
+            Transform::from_xyz(0.32, 0.83, 0.95),
+        ))
+        .with_children(|mug| {
+            mug.spawn((
+                Mesh3d(meshes.add(Cylinder::new(0.052, 0.015))),
+                MeshMaterial3d(coffee_mat),
+                Transform::from_xyz(0.0, 0.062, 0.0),
+            ));
+            mug.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.04, 0.075, 0.025))),
+                MeshMaterial3d(mug_mat),
+                Transform::from_xyz(0.072, 0.0, 0.0),
+            ));
+        });
+
+    // Red Stapler (base + top lever)
+    let stapler_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.90, 0.20, 0.20),
         perceptual_roughness: 0.4,
         ..default()
     });
-    let mut mug_prop = DestructibleProp::small("COFFEE MUG", 150, Color::srgb(0.95, 0.93, 0.88));
-    mug_prop.break_impulse = 2.8; // Extra fragile!
-    commands.spawn((
-        ScenarioEntity,
-        mug_prop,
-        RigidBody::Dynamic,
-        Mass(0.6),
-        Collider::cylinder(0.065, 0.13),
-        Mesh3d(meshes.add(Cylinder::new(0.065, 0.13))),
-        MeshMaterial3d(mug_mat),
-        Transform::from_xyz(0.28, 0.83, 0.92),
-    ));
+    commands
+        .spawn((
+            ScenarioEntity,
+            DestructibleProp::small(
+                "RED STAPLER!",
+                200,
+                Color::srgb(0.92, 0.24, 0.24),
+                DebrisStyle::Generic,
+            ),
+            RigidBody::Dynamic,
+            Mass(0.65),
+            Restitution::new(0.60),
+            Friction::new(0.26),
+            LinearDamping(0.10),
+            AngularDamping(0.10),
+            Collider::cuboid(0.16, 0.06, 0.07),
+            Mesh3d(meshes.add(Cuboid::new(0.16, 0.025, 0.07))),
+            MeshMaterial3d(stapler_mat.clone()),
+            Transform::from_xyz(-0.68, 0.79, 1.02),
+        ))
+        .with_children(|st| {
+            st.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.15, 0.03, 0.06))),
+                MeshMaterial3d(stapler_mat),
+                Transform::from_xyz(0.0, 0.025, 0.0).with_rotation(Quat::from_rotation_z(0.14)),
+            ));
+        });
 
-    // Red Stapler
-    let stapler_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.88, 0.20, 0.20),
-        perceptual_roughness: 0.45,
+    // Potted Cactus (cute terracotta pot + green cactus + arms)
+    let pot_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.82, 0.42, 0.24),
+        perceptual_roughness: 0.8,
         ..default()
     });
-    commands.spawn((
-        ScenarioEntity,
-        DestructibleProp::small("RED STAPLER!", 200, Color::srgb(0.90, 0.22, 0.22)),
-        RigidBody::Dynamic,
-        Mass(0.7),
-        Collider::cuboid(0.16, 0.06, 0.07),
-        Mesh3d(meshes.add(Cuboid::new(0.16, 0.06, 0.07))),
-        MeshMaterial3d(stapler_mat),
-        Transform::from_xyz(-0.68, 0.80, 1.02),
-    ));
+    let cactus_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.22, 0.68, 0.34),
+        perceptual_roughness: 0.75,
+        ..default()
+    });
+    commands
+        .spawn((
+            ScenarioEntity,
+            DestructibleProp::small(
+                "POOR CACTUS!",
+                180,
+                Color::srgb(0.28, 0.72, 0.36),
+                DebrisStyle::Ceramic,
+            ),
+            RigidBody::Dynamic,
+            Mass(0.8),
+            Restitution::new(0.50),
+            Friction::new(0.30),
+            LinearDamping(0.10),
+            AngularDamping(0.10),
+            Collider::cylinder(0.08, 0.22),
+            Transform::from_xyz(-0.78, 0.87, 0.72),
+            Visibility::default(),
+        ))
+        .with_children(|cac| {
+            cac.spawn((
+                Mesh3d(meshes.add(Cylinder::new(0.075, 0.11))),
+                MeshMaterial3d(pot_mat),
+                Transform::from_xyz(0.0, -0.055, 0.0),
+            ));
+            cac.spawn((
+                Mesh3d(meshes.add(Cylinder::new(0.042, 0.15))),
+                MeshMaterial3d(cactus_mat.clone()),
+                Transform::from_xyz(0.0, 0.045, 0.0),
+            ));
+            cac.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.06, 0.035, 0.035))),
+                MeshMaterial3d(cactus_mat.clone()),
+                Transform::from_xyz(0.045, 0.055, 0.0),
+            ));
+            cac.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.05, 0.035, 0.035))),
+                MeshMaterial3d(cactus_mat),
+                Transform::from_xyz(-0.042, 0.035, 0.0),
+            ));
+        });
 
     // TPS Report Paper Stacks
     let paper_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.95, 0.95, 0.92),
+        base_color: Color::srgb(0.96, 0.96, 0.92),
         perceptual_roughness: 0.9,
         ..default()
     });
-    for (px, pz, h) in [(0.58, 0.78, 0.14), (0.74, 0.95, 0.10)] {
-        let mut paper_prop =
-            DestructibleProp::small("TPS REPORTS", 100, Color::srgb(0.96, 0.96, 0.93));
-        paper_prop.break_impulse = 2.5;
+    for (px, pz, h) in [(0.62, 0.78, 0.14), (0.76, 0.96, 0.10)] {
+        let mut paper_prop = DestructibleProp::small(
+            "TPS REPORTS",
+            100,
+            Color::srgb(0.96, 0.96, 0.93),
+            DebrisStyle::Papers,
+        );
+        paper_prop.break_impulse = 1.6;
+        paper_prop.debris_count = 10;
         commands.spawn((
             ScenarioEntity,
             paper_prop,
             RigidBody::Dynamic,
-            Mass(0.8),
+            Mass(0.7),
+            Restitution::new(0.45),
+            Friction::new(0.30),
+            LinearDamping(0.10),
+            AngularDamping(0.10),
             Collider::cuboid(0.24, h, 0.30),
             Mesh3d(meshes.add(Cuboid::new(0.24, h, 0.30))),
             MeshMaterial3d(paper_mat.clone()),
@@ -300,61 +522,127 @@ pub fn spawn_office_scenario(
     }
 
     // ── Room Props (Target Zone) ───────────────────────────────────────────
-    // Cubicle Partitions
     let partition_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.28, 0.56, 0.54),
+        base_color: Color::srgb(0.28, 0.60, 0.56),
         perceptual_roughness: 0.9,
         ..default()
     });
-    for (cx, cz, label) in [(-1.85, -1.55, "CUBICLE WALL"), (1.85, -1.75, "CUBICLE WALL")] {
-        commands.spawn((
-            ScenarioEntity,
-            DestructibleProp::tall(label, 350, Color::srgb(0.32, 0.62, 0.58)),
-            RigidBody::Dynamic,
-            Mass(14.0),
-            Collider::cuboid(1.6, 1.55, 0.12),
-            Mesh3d(meshes.add(Cuboid::new(1.6, 1.55, 0.12))),
-            MeshMaterial3d(partition_mat.clone()),
-            Transform::from_xyz(cx, 0.78, cz),
-        ));
+    let cat_poster_mat = materials.add(StandardMaterial {
+        base_color_texture: Some(textures.cat_poster.clone()),
+        perceptual_roughness: 0.6,
+        ..default()
+    });
+
+    for (idx, (cx, cz)) in [(-1.85, -1.55), (1.85, -1.75)].iter().enumerate() {
+        commands
+            .spawn((
+                ScenarioEntity,
+                DestructibleProp::tall(
+                    "CUBICLE WALL",
+                    350,
+                    Color::srgb(0.32, 0.64, 0.58),
+                    DebrisStyle::Generic,
+                ),
+                RigidBody::Dynamic,
+                Mass(12.0),
+                Restitution::new(0.45),
+                Friction::new(0.32),
+                LinearDamping(0.10),
+                AngularDamping(0.10),
+                Collider::cuboid(1.6, 1.55, 0.12),
+                Mesh3d(meshes.add(Cuboid::new(1.6, 1.55, 0.12))),
+                MeshMaterial3d(partition_mat.clone()),
+                Transform::from_xyz(*cx, 0.78, *cz),
+            ))
+            .with_children(|part| {
+                // Top metal rail
+                part.spawn((
+                    Mesh3d(meshes.add(Cuboid::new(1.64, 0.06, 0.15))),
+                    MeshMaterial3d(trim_mat.clone()),
+                    Transform::from_xyz(0.0, 0.77, 0.0),
+                ));
+                // Crooked cat poster on the left cubicle partition
+                if idx == 0 {
+                    part.spawn((
+                        Mesh3d(meshes.add(Cuboid::new(0.42, 0.42, 0.03))),
+                        MeshMaterial3d(cat_poster_mat.clone()),
+                        Transform::from_xyz(0.15, 0.25, 0.075)
+                            .with_rotation(Quat::from_rotation_z(-0.08)),
+                    ));
+                }
+            });
     }
 
-    // Tall Filing Cabinets
+    // Tall Filing Cabinets (with 3 drawer fronts & handles)
     let cabinet_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.45, 0.49, 0.42),
-        perceptual_roughness: 0.65,
+        base_color: Color::srgb(0.46, 0.50, 0.42),
+        perceptual_roughness: 0.6,
+        ..default()
+    });
+    let drawer_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.38, 0.42, 0.35),
+        perceptual_roughness: 0.55,
         ..default()
     });
     for (fx, fz) in [(-1.25, -3.2), (1.45, -3.5)] {
-        commands.spawn((
-            ScenarioEntity,
-            DestructibleProp::tall("FILING CABINET", 450, Color::srgb(0.48, 0.52, 0.45)),
-            RigidBody::Dynamic,
-            Mass(18.0),
-            Collider::cuboid(0.65, 1.50, 0.65),
-            Mesh3d(meshes.add(Cuboid::new(0.65, 1.50, 0.65))),
-            MeshMaterial3d(cabinet_mat.clone()),
-            Transform::from_xyz(fx, 0.75, fz),
-        ));
+        commands
+            .spawn((
+                ScenarioEntity,
+                DestructibleProp::tall(
+                    "FILING CABINET",
+                    450,
+                    Color::srgb(0.48, 0.52, 0.45),
+                    DebrisStyle::Papers,
+                ),
+                RigidBody::Dynamic,
+                Mass(15.0),
+                Restitution::new(0.48),
+                Friction::new(0.30),
+                LinearDamping(0.10),
+                AngularDamping(0.10),
+                Collider::cuboid(0.65, 1.50, 0.65),
+                Mesh3d(meshes.add(Cuboid::new(0.65, 1.50, 0.65))),
+                MeshMaterial3d(cabinet_mat.clone()),
+                Transform::from_xyz(fx, 0.75, fz),
+            ))
+            .with_children(|cab| {
+                for dy in [-0.42_f32, 0.0, 0.42] {
+                    cab.spawn((
+                        Mesh3d(meshes.add(Cuboid::new(0.54, 0.34, 0.03))),
+                        MeshMaterial3d(drawer_mat.clone()),
+                        Transform::from_xyz(0.0, dy, 0.33),
+                    ));
+                }
+            });
     }
 
     // Water Cooler
     let cooler_body_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.88, 0.90, 0.92),
-        perceptual_roughness: 0.5,
+        base_color: Color::srgb(0.90, 0.92, 0.95),
+        perceptual_roughness: 0.45,
         ..default()
     });
     let cooler_jug_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.25, 0.68, 0.95),
-        perceptual_roughness: 0.25,
+        base_color: Color::srgb(0.24, 0.70, 0.96),
+        emissive: LinearRgba::rgb(0.04, 0.14, 0.24),
+        perceptual_roughness: 0.2,
         ..default()
     });
     commands
         .spawn((
             ScenarioEntity,
-            DestructibleProp::tall("WATER COOLER", 500, Color::srgb(0.35, 0.75, 0.98)),
+            DestructibleProp::tall(
+                "WATER COOLER",
+                500,
+                Color::srgb(0.32, 0.76, 0.98),
+                DebrisStyle::Water,
+            ),
             RigidBody::Dynamic,
-            Mass(12.0),
+            Mass(10.0),
+            Restitution::new(0.55),
+            Friction::new(0.28),
+            LinearDamping(0.10),
+            AngularDamping(0.10),
             Collider::cuboid(0.45, 1.05, 0.45),
             Mesh3d(meshes.add(Cuboid::new(0.45, 1.05, 0.45))),
             MeshMaterial3d(cooler_body_mat),
@@ -368,12 +656,69 @@ pub fn spawn_office_scenario(
             ));
         });
 
-    // Coworker Desk + Monitor in the back
+    // Swivel Chair near coworker's desk
+    let chair_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.18, 0.20, 0.25),
+        perceptual_roughness: 0.75,
+        ..default()
+    });
+    commands
+        .spawn((
+            ScenarioEntity,
+            DestructibleProp::tall(
+                "SWIVEL CHAIR",
+                220,
+                Color::srgb(0.22, 0.25, 0.32),
+                DebrisStyle::Generic,
+            ),
+            RigidBody::Dynamic,
+            Mass(6.0),
+            Restitution::new(0.60),
+            Friction::new(0.22),
+            LinearDamping(0.08),
+            AngularDamping(0.08),
+            Collider::cuboid(0.52, 0.90, 0.52),
+            Transform::from_xyz(-0.75, 0.46, -2.1),
+            Visibility::default(),
+        ))
+        .with_children(|ch| {
+            ch.spawn((
+                Mesh3d(meshes.add(Cylinder::new(0.26, 0.06))),
+                MeshMaterial3d(leg_mat.clone()),
+                Transform::from_xyz(0.0, -0.40, 0.0),
+            ));
+            ch.spawn((
+                Mesh3d(meshes.add(Cylinder::new(0.04, 0.36))),
+                MeshMaterial3d(leg_mat),
+                Transform::from_xyz(0.0, -0.20, 0.0),
+            ));
+            ch.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.48, 0.08, 0.46))),
+                MeshMaterial3d(chair_mat.clone()),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+            ));
+            ch.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.44, 0.44, 0.08))),
+                MeshMaterial3d(chair_mat),
+                Transform::from_xyz(0.0, 0.24, -0.20),
+            ));
+        });
+
+    // Coworker Desk + CRT in the back
     commands.spawn((
         ScenarioEntity,
-        DestructibleProp::tall("COWORKER DESK", 400, Color::srgb(0.62, 0.38, 0.19)),
+        DestructibleProp::tall(
+            "COWORKER DESK",
+            400,
+            Color::srgb(0.62, 0.38, 0.19),
+            DebrisStyle::Generic,
+        ),
         RigidBody::Dynamic,
-        Mass(20.0),
+        Mass(16.0),
+        Restitution::new(0.45),
+        Friction::new(0.32),
+        LinearDamping(0.10),
+        AngularDamping(0.10),
         Collider::cuboid(1.8, 0.75, 0.85),
         Mesh3d(meshes.add(Cuboid::new(1.8, 0.75, 0.85))),
         MeshMaterial3d(oak_mat),
@@ -382,9 +727,18 @@ pub fn spawn_office_scenario(
     commands
         .spawn((
             ScenarioEntity,
-            DestructibleProp::small("COWORKER CRT", 350, Color::srgb(0.20, 0.75, 0.72)),
+            DestructibleProp::small(
+                "COWORKER CRT",
+                350,
+                Color::srgb(0.20, 0.82, 0.76),
+                DebrisStyle::Electronics,
+            ),
             RigidBody::Dynamic,
-            Mass(4.5),
+            Mass(3.8),
+            Restitution::new(0.50),
+            Friction::new(0.30),
+            LinearDamping(0.10),
+            AngularDamping(0.10),
             Collider::cuboid(0.46, 0.42, 0.40),
             Mesh3d(meshes.add(Cuboid::new(0.46, 0.42, 0.40))),
             MeshMaterial3d(crt_case),

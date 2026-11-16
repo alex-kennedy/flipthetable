@@ -18,7 +18,9 @@ use hud::{
     animate_score_popups, setup_hud, spawn_score_popups, update_hud, FloatingPopup, HudState,
     RetryButton,
 };
-use pixel_art::{create_pixel_render_target, create_procedural_textures, PixelRenderTarget};
+use pixel_art::{
+    create_pixel_render_target, create_procedural_textures, PixelRenderTarget, ProceduralTextures,
+};
 use scene::{spawn_office_scenario, ScenarioEntity};
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -160,8 +162,9 @@ fn setup_initial_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    textures: Res<ProceduralTextures>,
 ) {
-    spawn_office_scenario(&mut commands, &mut meshes, &mut materials);
+    spawn_office_scenario(&mut commands, &mut meshes, &mut materials, &textures);
 }
 
 #[allow(deprecated)]
@@ -173,6 +176,7 @@ fn handle_retry_input(
     popup_q: Query<Entity, With<FloatingPopup>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    textures: Res<ProceduralTextures>,
     mut tracker: ResMut<FlipTracker>,
     mut rig: ResMut<CameraRig>,
     mut score: ResMut<ScoreState>,
@@ -200,7 +204,7 @@ fn handle_retry_input(
     hud_state.displayed_score = 0.0;
     virtual_time.set_relative_speed(1.0);
 
-    spawn_office_scenario(&mut commands, &mut meshes, &mut materials);
+    spawn_office_scenario(&mut commands, &mut meshes, &mut materials, &textures);
     next_state.set(GamePhase::Ready);
 }
 
