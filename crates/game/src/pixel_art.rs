@@ -9,6 +9,10 @@ pub struct ProceduralTextures {
     pub wood: Handle<Image>,
     pub crt_angry: Handle<Image>,
     pub cat_poster: Handle<Image>,
+    pub hazard_stripe: Handle<Image>,
+    pub whiteboard_doodle: Handle<Image>,
+    pub ceiling_tile: Handle<Image>,
+    pub wall_grid: Handle<Image>,
 }
 
 pub fn create_procedural_textures(images: &mut Assets<Image>) -> ProceduralTextures {
@@ -17,6 +21,10 @@ pub fn create_procedural_textures(images: &mut Assets<Image>) -> ProceduralTextu
         wood: images.add(make_wood_image()),
         crt_angry: images.add(make_crt_angry_image()),
         cat_poster: images.add(make_cat_poster_image()),
+        hazard_stripe: images.add(make_hazard_stripe_image()),
+        whiteboard_doodle: images.add(make_whiteboard_image()),
+        ceiling_tile: images.add(make_ceiling_tile_image()),
+        wall_grid: images.add(make_wall_grid_image()),
     }
 }
 
@@ -86,7 +94,6 @@ fn make_crt_angry_image() -> Image {
         }
     };
 
-    // Subtle scanline tint
     for y in 0..h {
         if y % 2 == 0 {
             for x in 0..w {
@@ -96,19 +103,16 @@ fn make_crt_angry_image() -> Image {
     }
 
     let glow = [110_u8, 250, 225];
-    // Angry eyebrows
     for i in 0..4 {
         set(5 + i, 4 + (i / 2), glow);
         set(18 - i, 4 + (i / 2), glow);
     }
-    // Eyes
     for dy in 0..2 {
         for dx in 0..2 {
             set(7 + dx, 7 + dy, glow);
             set(15 + dx, 7 + dy, glow);
         }
     }
-    // Frown
     for x in 8..=15 {
         let curve = if x <= 9 || x >= 14 { 13 } else { 12 };
         set(x, curve, glow);
@@ -130,7 +134,6 @@ fn make_cat_poster_image() -> Image {
         }
     };
 
-    // Wooden frame border
     for i in 0..16 {
         set(i, 0, [130, 78, 38]);
         set(i, 15, [130, 78, 38]);
@@ -138,7 +141,6 @@ fn make_cat_poster_image() -> Image {
         set(15, i, [130, 78, 38]);
     }
 
-    // Orange cat head & ears
     let orange = [235_u8, 140, 52];
     for y in 5..=12 {
         for x in 4..=11 {
@@ -152,7 +154,6 @@ fn make_cat_poster_image() -> Image {
     set(11, 4, orange);
     set(10, 4, orange);
 
-    // Eyes & nose
     set(6, 8, [30, 30, 35]);
     set(9, 8, [30, 30, 35]);
     set(7, 10, [220, 95, 110]);
@@ -161,6 +162,100 @@ fn make_cat_poster_image() -> Image {
     let mut data = Vec::with_capacity((w * h * 4) as usize);
     for rgb in pixels {
         data.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+    }
+    nearest_rgba_image(w, h, data)
+}
+
+fn make_hazard_stripe_image() -> Image {
+    let (w, h) = (16, 16);
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let stripe = ((x + y) / 4) % 2 == 0;
+            let rgb = if stripe { [242, 191, 42] } else { [28, 32, 40] };
+            data.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+        }
+    }
+    nearest_rgba_image(w, h, data)
+}
+
+fn make_whiteboard_image() -> Image {
+    let (w, h) = (32, 20);
+    let mut pixels = vec![[240_u8, 244, 248]; (w * h) as usize];
+    let mut set = |x: i32, y: i32, rgb: [u8; 3]| {
+        if x >= 0 && x < w as i32 && y >= 0 && y < h as i32 {
+            pixels[(y as u32 * w + x as u32) as usize] = rgb;
+        }
+    };
+
+    // Border
+    for x in 0..32 {
+        set(x, 0, [70, 78, 92]);
+        set(x, 19, [70, 78, 92]);
+    }
+    for y in 0..20 {
+        set(0, y, [70, 78, 92]);
+        set(31, y, [70, 78, 92]);
+    }
+
+    // Blue chart line going down
+    for x in 4..26 {
+        let y = if x < 14 { 6 } else { 6 + (x - 14) / 2 };
+        set(x, y.min(16), [40, 120, 220]);
+    }
+    // Red downward arrow & X
+    set(25, 13, [220, 50, 50]);
+    set(26, 14, [220, 50, 50]);
+    set(27, 13, [220, 50, 50]);
+    set(6, 12, [220, 50, 50]);
+    set(8, 12, [220, 50, 50]);
+    set(7, 13, [220, 50, 50]);
+    set(6, 14, [220, 50, 50]);
+    set(8, 14, [220, 50, 50]);
+
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for rgb in pixels {
+        data.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+    }
+    nearest_rgba_image(w, h, data)
+}
+
+fn make_ceiling_tile_image() -> Image {
+    let (w, h) = (16, 16);
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let grid = x == 0 || y == 0;
+            let speck = (x * 7 + y * 13) % 19 == 0;
+            let rgb = if grid {
+                [150, 154, 160]
+            } else if speck {
+                [198, 200, 204]
+            } else {
+                [214, 216, 218]
+            };
+            data.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+        }
+    }
+    nearest_rgba_image(w, h, data)
+}
+
+fn make_wall_grid_image() -> Image {
+    let (w, h) = (16, 16);
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let seam = x == 0;
+            let rib = x % 4 == 0;
+            let rgb = if seam {
+                [168, 164, 152]
+            } else if rib {
+                [194, 189, 176]
+            } else {
+                [204, 198, 184]
+            };
+            data.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+        }
     }
     nearest_rgba_image(w, h, data)
 }
