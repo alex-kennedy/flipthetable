@@ -1,4 +1,5 @@
 mod audio;
+mod bridge;
 mod destruction;
 mod flip;
 mod hud;
@@ -6,11 +7,15 @@ mod pixel_art;
 mod scene;
 
 use avian3d::prelude::*;
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::window::{PresentMode, WindowResolution};
 use wasm_bindgen::prelude::*;
 
 use audio::{flush_audio_queue, RetroAudio};
+use bridge::{
+    drain_bridge_commands, emit_run_complete, emit_scenario_changed, PendingRoundReset,
+};
 use destruction::{
     check_run_settled, process_destruction, update_debris_lifetime, update_explosion_puffs,
     PendingPopups, ScoreState,
@@ -62,6 +67,8 @@ pub fn start_game(canvas_selector: &str) {
         .init_resource::<HudState>()
         .init_resource::<RetroAudio>()
         .init_resource::<CurrentScenario>()
+        .init_resource::<PendingRoundReset>()
+        .add_systems(OnEnter(GamePhase::Settled), emit_run_complete)
         .add_systems(
             Startup,
             (
@@ -83,7 +90,8 @@ pub fn start_game(canvas_selector: &str) {
                 animate_score_popups,
                 update_hud,
                 flush_audio_queue,
-                handle_retry_input,
+                drain_bridge_commands,
+                handle_retry_input.after(drain_bridge_commands),
             ),
         )
         .run();
@@ -144,6 +152,19 @@ fn setup_initial_scene(
     spawn_scenario(scenario.0, &mut commands, &mut meshes, &mut materials, &textures);
 }
 
+#[derive(SystemParam)]
+struct ResetState<'w> {
+    current_scenario: ResMut<'w, CurrentScenario>,
+    tracker: ResMut<'w, FlipTracker>,
+    rig: ResMut<'w, CameraRig>,
+    score: ResMut<'w, ScoreState>,
+    popups: ResMut<'w, PendingPopups>,
+    hud_state: ResMut<'w, HudState>,
+    virtual_time: ResMut<'w, Time<Virtual>>,
+    next_state: ResMut<'w, NextState<GamePhase>>,
+    pending_reset: ResMut<'w, PendingRoundReset>,
+}
+
 #[allow(deprecated)]
 fn handle_retry_input(
     mut commands: Commands,
@@ -157,14 +178,7 @@ fn handle_retry_input(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     textures: Res<ProceduralTextures>,
-    mut current_scenario: ResMut<CurrentScenario>,
-    mut tracker: ResMut<FlipTracker>,
-    mut rig: ResMut<CameraRig>,
-    mut score: ResMut<ScoreState>,
-    mut popups: ResMut<PendingPopups>,
-    mut hud_state: ResMut<HudState>,
-    mut virtual_time: ResMut<Time<Virtual>>,
-    mut next_state: ResMut<NextState<GamePhase>>,
+    mut rs: ResetState,
 ) {
     let mut clicked_retry = false;
     let mut clicked_next = false;
@@ -179,21 +193,28 @@ fn handle_retry_input(
         }
     }
 
-    let mut target_scenario = None;
-    if keys.just_pressed(KeyCode::Digit1) {
-        target_scenario = Some(ScenarioId::CorporateCubicle);
-    } else if keys.just_pressed(KeyCode::Digit2) {
-        target_scenario = Some(ScenarioId::BuildingSite);
-    } else if keys.just_pressed(KeyCode::KeyN) || clicked_next {
-        target_scenario = Some(current_scenario.0.next());
-    } else if keys.just_pressed(KeyCode::KeyR) || clicked_retry {
-        target_scenario = Some(current_scenario.0);
+    let mut target_scenario = rs.pending_reset.target.take();
+    if target_scenario.is_none() && rs.pending_reset.reset_current {
+        rs.pending_reset.reset_current = false;
+        target_scenario = Some(rs.current_scenario.0);
+    }
+    if target_scenario.is_none() {
+        if keys.just_pressed(KeyCode::Digit1) {
+            target_scenario = Some(ScenarioId::CorporateCubicle);
+        } else if keys.just_pressed(KeyCode::Digit2) {
+            target_scenario = Some(ScenarioId::BuildingSite);
+        } else if keys.just_pressed(KeyCode::KeyN) || clicked_next {
+            target_scenario = Some(rs.current_scenario.0.next());
+        } else if keys.just_pressed(KeyCode::KeyR) || clicked_retry {
+            target_scenario = Some(rs.current_scenario.0);
+        }
     }
 
     let Some(next_id) = target_scenario else {
         return;
     };
-    current_scenario.0 = next_id;
+    rs.current_scenario.0 = next_id;
+    emit_scenario_changed(next_id);
 
     for entity in &scenario_q {
         commands.entity(entity).despawn();
@@ -202,15 +223,15 @@ fn handle_retry_input(
         commands.entity(entity).despawn();
     }
 
-    tracker.reset();
-    rig.reset();
-    score.reset();
-    popups.0.clear();
-    hud_state.displayed_score = 0.0;
-    virtual_time.set_relative_speed(1.0);
+    rs.tracker.reset();
+    rs.rig.reset();
+    rs.score.reset();
+    rs.popups.0.clear();
+    rs.hud_state.displayed_score = 0.0;
+    rs.virtual_time.set_relative_speed(1.0);
 
     spawn_scenario(next_id, &mut commands, &mut meshes, &mut materials, &textures);
-    next_state.set(GamePhase::Ready);
+    rs.next_state.set(GamePhase::Ready);
 }
 
 fn notify_js_ready() {
