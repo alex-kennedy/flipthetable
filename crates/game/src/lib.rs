@@ -126,9 +126,11 @@ fn setup_pixel_pipeline_and_camera(
         Transform::from_xyz(-2.8, 3.2, -1.0),
     ));
 
-    // 3D scene camera renders into the 480x270 nearest-neighbor pixel buffer
+    // 3D scene camera renders into the 480x270 nearest-neighbor pixel buffer.
+    // Msaa::Off is required for offscreen RenderTarget::Image on WebGL2 and keeps pixels crisp.
     commands.spawn((
         Camera3d::default(),
+        Msaa::Off,
         Camera {
             order: 0,
             ..default()
@@ -140,6 +142,8 @@ fn setup_pixel_pipeline_and_camera(
     // Main window 2D camera displays the upscaled pixel buffer + crisp bevy_ui HUD
     commands.spawn((
         Camera2d,
+        IsDefaultUiCamera,
+        Msaa::Off,
         Camera {
             order: 1,
             ..default()
