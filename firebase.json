@@ -1,0 +1,19 @@
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "auth": {
+    "providers": {
+      "anonymous": false,
+      "emailPassword": false,
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "Flip the Table",
+        "supportEmail": "support@alexkennedy.dev",
+        "authorizedRedirectUris": [
+          "https://flipthetable-e28ab.firebaseapp.com/__/auth/handler"
+        ]
+      }
+    }
+  }
+}

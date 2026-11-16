@@ -1,0 +1,40 @@
+{
+  "scenarios": [
+    {
+      "id": "corporate",
+      "title": "CORPORATE CUBICLE",
+      "shortLabel": "1: OFFICE",
+      "file": "scenarios/corporate.json"
+    },
+    {
+      "id": "building_site",
+      "title": "BUILDING SITE TRAILER",
+      "shortLabel": "2: SITE",
+      "file": "scenarios/building_site.json"
+    },
+    {
+      "id": "boardroom",
+      "title": "EXECUTIVE BOARDROOM",
+      "shortLabel": "3: BOARDROOM",
+      "file": "scenarios/boardroom.json"
+    },
+    {
+      "id": "all_hands",
+      "title": "ALL-HANDS LAYOFF STAGE",
+      "shortLabel": "4: ALL-HANDS",
+      "file": "scenarios/all_hands.json"
+    },
+    {
+      "id": "breakroom",
+      "title": "SAD CORPORATE BREAKROOM",
+      "shortLabel": "5: BREAKROOM",
+      "file": "scenarios/breakroom.json"
+    },
+    {
+      "id": "warehouse",
+      "title": "FULFILLMENT SUPERVISOR CAGE",
+      "shortLabel": "6: WAREHOUSE",
+      "file": "scenarios/warehouse.json"
+    }
+  ]
+}

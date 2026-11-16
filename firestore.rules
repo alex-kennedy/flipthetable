@@ -1,0 +1,199 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// This security rules file assumes the following data structures:
+//
+// Collection: users
+// Document ID: {uid} (Firebase Auth UID of the Google-authenticated player)
+// Fields:
+//   - username: string (required, length 1..24, trimmed length >= 1, mutable) - Player display handle
+//   - scores: map (required, max 50 keys, mutable) - Personal best scores keyed by levelId
+//   - updatedAt: timestamp (required, must equal request.time via serverTimestamp(), mutable) - Last write timestamp
+//
+// Subcollection: levels/{levelId}/scores
+// Parent ID: {levelId} (string, length 1..64)
+// Document ID: {uid} (Firebase Auth UID of the Google-authenticated player)
+// Fields:
+//   - uid: string (required, equals path {uid} and request.auth.uid, immutable) - Player UID
+//   - username: string (required, length 1..24, trimmed length >= 1, mutable) - Public leaderboard display handle
+//   - score: int (required, > 0 and <= 100000000, monotonically non-decreasing on update) - High score for level
+//   - updatedAt: timestamp (required, must equal request.time via serverTimestamp(), mutable) - Last write timestamp
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if the user authenticated specifically via Google Sign-In
+    function isGoogleUser() {
+      return isAuthenticated() &&
+             'firebase' in request.auth.token &&
+             'sign_in_provider' in request.auth.token.firebase &&
+             request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+
+    // Check if the authenticated user owns the document path {userId}
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Check if the Google-authenticated user owns the document path {userId}
+    function isGoogleOwner(userId) {
+      return isGoogleUser() && request.auth.uid == userId;
+    }
+
+    // Check if the authenticated user matches the existing document's uid field
+    function isDocOwner() {
+      return isAuthenticated() && resource.data.uid == request.auth.uid;
+    }
+
+    // Verify uid field matches the authenticated user on create/write
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) ||
+             request.resource.data.uid == request.auth.uid;
+    }
+
+    // Ensure uid field is not modified on update
+    function uidNotModified() {
+      return !('uid' in request.resource.data) ||
+             request.resource.data.uid == resource.data.uid;
+    }
+
+    // Validate that all required fields exist on the resulting document
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // Validate that the document contains strictly allowed fields (no schema pollution)
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Validate that immutable fields have not been modified during an update
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // Validate Firebase Auth UID path bounds
+    function isValidUid(uid) {
+      return uid is string &&
+             uid.size() >= 1 &&
+             uid.size() <= 128;
+    }
+
+    // Validate levelId path bounds
+    function isValidLevelId(levelId) {
+      return levelId is string &&
+             levelId.size() >= 1 &&
+             levelId.size() <= 64;
+    }
+
+    // Validate player username (non-empty trimmed string of 1..24 characters)
+    function isValidUsername(username) {
+      return username is string &&
+             username.size() >= 1 &&
+             username.size() <= 24 &&
+             username.trim().size() >= 1;
+    }
+
+    // Validate positive bounded integer score
+    function isValidScoreValue(score) {
+      return score is int &&
+             score > 0 &&
+             score <= 100000000;
+    }
+
+    // Enforce server-generated timestamp (serverTimestamp())
+    function isValidServerTimestamp(ts) {
+      return ts is timestamp && ts == request.time;
+    }
+
+    // ===============================================================
+    // Domain Validators (Called on BOTH create and update)
+    // ===============================================================
+
+    // Validate users/{uid} document schema and constraints
+    function isValidUserProfile(data) {
+      return hasRequiredFields(['username', 'scores', 'updatedAt']) &&
+             hasOnlyAllowedFields(['username', 'scores', 'updatedAt']) &&
+             isValidUsername(data.username) &&
+             data.scores is map &&
+             data.scores.size() <= 50 &&
+             isValidServerTimestamp(data.updatedAt);
+    }
+
+    // Validate levels/{levelId}/scores/{uid} document schema and constraints
+    function isValidLeaderboardScore(data, uid) {
+      return hasRequiredFields(['uid', 'username', 'score', 'updatedAt']) &&
+             hasOnlyAllowedFields(['uid', 'username', 'score', 'updatedAt']) &&
+             data.uid is string &&
+             data.uid == uid &&
+             uidUnchanged() &&
+             isValidUsername(data.username) &&
+             isValidScoreValue(data.score) &&
+             isValidServerTimestamp(data.updatedAt);
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // Private per-user profile & personal high score map (PII/user-private separation)
+    match /users/{uid} {
+      allow read: if isOwner(uid);
+
+      allow create: if isGoogleOwner(uid) &&
+                       isValidUid(uid) &&
+                       isValidUserProfile(request.resource.data);
+
+      allow update: if isGoogleOwner(uid) &&
+                       isValidUid(uid) &&
+                       isValidUserProfile(request.resource.data);
+
+      allow delete: if false;
+    }
+
+    // Per-level public high score leaderboards
+    match /levels/{levelId} {
+      allow read, write: if false;
+
+      match /scores/{uid} {
+        // Explicitly public so all players and guests can view per-level Top 10 leaderboards
+        allow read: if true;
+
+        allow create: if isGoogleOwner(uid) &&
+                         isValidUid(uid) &&
+                         isValidLevelId(levelId) &&
+                         isValidLeaderboardScore(request.resource.data, uid);
+
+        allow update: if isGoogleOwner(uid) &&
+                         isDocOwner() &&
+                         uidNotModified() &&
+                         areImmutableFieldsUnchanged(['uid']) &&
+                         isValidUid(uid) &&
+                         isValidLevelId(levelId) &&
+                         isValidLeaderboardScore(request.resource.data, uid) &&
+                         request.resource.data.score >= resource.data.score;
+
+        allow delete: if false;
+      }
+    }
+
+    // Default deny catch-all for all other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

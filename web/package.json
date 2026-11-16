@@ -5,11 +5,13 @@
   "scripts": {
     "dev": "npm run build:wasm && next dev",
     "build": "npm run build:wasm:release && next build",
+    "deploy": "npm run build && npx wrangler pages deploy",
     "start": "next start",
-    "build:wasm": "wasm-pack build ../crates/game --target web --dev --out-dir ../../web/public/wasm --out-name flipthetable_game",
-    "build:wasm:release": "wasm-pack build ../crates/game --target web --release --out-dir ../../web/public/wasm --out-name flipthetable_game"
+    "build:wasm": "rm -f public/wasm/package.json public/wasm/flipthetable_game_bg.wasm.gz && wasm-pack build ../crates/game --target web --dev --out-dir ../../web/public/wasm --out-name flipthetable_game && gzip -1 -f public/wasm/flipthetable_game_bg.wasm",
+    "build:wasm:release": "rm -f public/wasm/package.json public/wasm/flipthetable_game_bg.wasm.gz && wasm-pack build ../crates/game --target web --release --out-dir ../../web/public/wasm --out-name flipthetable_game && gzip -9 -f public/wasm/flipthetable_game_bg.wasm"
   },
   "dependencies": {
+    "firebase": "^13.3.0",
     "next": "^15.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

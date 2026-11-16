@@ -1,3 +1,11 @@
+@font-face {
+  font-family: "ArcadePixel";
+  src: url("/assets/fonts/arcade_pixel.ttf") format("truetype");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -11,7 +19,9 @@ body {
   overflow: hidden;
   background: #0d0f14;
   color: #f5efe0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: "ArcadePixel", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  -webkit-font-smoothing: none;
+  font-smooth: never;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -21,8 +31,8 @@ body {
     to bottom,
     rgba(0, 0, 0, 0) 0px,
     rgba(0, 0, 0, 0) 2px,
-    rgba(0, 0, 0, 0.22) 3px,
-    rgba(0, 0, 0, 0.22) 4px
+    rgba(0, 0, 0, 0.18) 3px,
+    rgba(0, 0, 0, 0.18) 4px
   );
 }
 

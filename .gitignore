@@ -32,5 +32,10 @@ web/node_modules
 web/.next
 web/out
 web/public/wasm
+web/.env*.local
+!web/.env.example
+.firebase/
+firebase-debug.log*
+firestore-debug.log*
 crates/*/pkg
 .DS_Store

@@ -1,0 +1,98 @@
+{
+  "id": "breakroom",
+  "title": "SAD CORPORATE BREAKROOM",
+  "shortLabel": "5: BREAKROOM",
+  "theme": {
+    "floorTexture": "linoleum_tile",
+    "wallTexture": "breakroom_mint",
+    "ceilingTexture": "ceiling_tbar",
+    "trimTexture": "linoleum_cove",
+    "windowStyle": "breakroom_transom",
+    "hasLeftBlindWindow": true,
+    "hasPillarClock": true,
+    "sunbeamColor": [0.92, 0.98, 0.84, 0.13]
+  },
+  "lighting": {
+    "clearColor": [0.07, 0.09, 0.08],
+    "ambientColor": [0.74, 0.82, 0.76],
+    "ambientBrightness": 340.0,
+    "sunColor": [0.98, 0.98, 0.86],
+    "sunIlluminance": 15200.0,
+    "sunPos": [-3.2, 5.0, -3.4],
+    "sunLook": [0.0, 0.4, -1.6],
+    "fillColor": [0.78, 0.92, 0.84],
+    "fillIntensity": 48000.0,
+    "fillPos": [2.4, 3.6, 0.4],
+    "accentColor": [1.0, 0.76, 0.36],
+    "accentIntensity": 16000.0,
+    "accentPos": [-1.8, 2.0, -4.2],
+    "fogColor": [0.10, 0.13, 0.12, 1.0],
+    "fogStart": 6.8,
+    "fogEnd": 18.5,
+    "shadowTint": [0.10, 0.15, 0.14],
+    "highlightTint": [1.02, 1.04, 0.92],
+    "bloomStrength": 0.46
+  },
+  "desk": {
+    "archetype": "laminate_break",
+    "pos": [0.0, 0.38, 0.88],
+    "mass": 19.0
+  },
+  "props": [
+    { "prefab": "SheetCakeTable", "pos": [0.0, 0.84, 0.86], "rotY": 4.0, "points": 460 },
+    { "prefab": "PizzaBoxStack", "pos": [-0.66, 0.86, 0.84], "rotY": -14.0, "points": 340 },
+    { "prefab": "PizzaBoxStack", "pos": [0.66, 0.86, 0.88], "rotY": 18.0, "points": 340 },
+    { "prefab": "SodaCanSixPack", "pos": [-0.36, 0.84, 1.14], "rotY": 12.0, "points": 230 },
+    { "prefab": "SodaCanSixPack", "pos": [0.38, 0.84, 1.12], "rotY": -16.0, "points": 230 },
+    { "prefab": "SteamingCoffeeMug", "pos": [-0.92, 0.83, 1.08], "rotY": 22.0, "points": 180 },
+    { "prefab": "SteamingCoffeeMug", "pos": [0.92, 0.83, 0.68], "rotY": -18.0, "points": 180 },
+    { "prefab": "LoosePaperFan", "pos": [0.02, 0.785, 1.22], "rotY": -8.0, "points": 180 },
+    { "prefab": "PaperInTray", "pos": [-0.90, 0.82, 0.64], "rotY": 10.0, "points": 210 },
+
+    { "prefab": "FoldingChair", "pos": [-1.25, 0.42, -0.65], "rotY": 35.0, "points": 190 },
+    { "prefab": "FoldingChair", "pos": [1.25, 0.42, -0.65], "rotY": -35.0, "points": 190 },
+    { "prefab": "TrashBin", "pos": [-2.15, 0.28, -0.85], "rotY": 0.0, "points": 210 },
+    { "prefab": "TrashBin", "pos": [2.15, 0.28, -0.85], "rotY": 0.0, "points": 210 },
+    { "prefab": "WaterCooler", "pos": [2.85, 0.56, -1.25], "rotY": -25.0, "points": 480 },
+    { "prefab": "BalloonColumn", "pos": [-2.85, 0.83, -1.25], "rotY": 0.0, "points": 340 },
+
+    { "prefab": "CoworkerDesk", "pos": [-1.35, 0.38, -2.15], "rotY": 8.0, "points": 380 },
+    { "prefab": "CoffeeUrn", "pos": [-1.75, 1.04, -2.15], "rotY": 8.0, "points": 490 },
+    { "prefab": "Microwave", "pos": [-1.15, 0.92, -2.15], "rotY": 8.0, "points": 440 },
+    { "prefab": "CoffeeMakerPot", "pos": [-0.65, 0.93, -2.15], "rotY": 8.0, "points": 340 },
+
+    { "prefab": "CoworkerDesk", "pos": [1.35, 0.38, -2.15], "rotY": -8.0, "points": 380 },
+    { "prefab": "SheetCakeTable", "pos": [1.05, 0.84, -2.15], "rotY": -8.0, "points": 460 },
+    { "prefab": "EspressoMachine", "pos": [1.75, 0.97, -2.15], "rotY": -8.0, "points": 620 },
+    { "prefab": "SodaCanSixPack", "pos": [1.42, 0.84, -1.85], "rotY": 20.0, "points": 230 },
+
+    { "prefab": "FoldingChair", "pos": [-1.65, 0.42, -2.95], "rotY": 160.0, "points": 190 },
+    { "prefab": "FoldingChair", "pos": [-0.95, 0.42, -2.95], "rotY": 175.0, "points": 190 },
+    { "prefab": "FoldingChair", "pos": [0.95, 0.42, -2.95], "rotY": -175.0, "points": 190 },
+    { "prefab": "FoldingChair", "pos": [1.65, 0.42, -2.95], "rotY": -160.0, "points": 190 },
+
+    { "prefab": "PlasticTrophyRack", "pos": [-3.95, 0.59, -2.25], "rotY": 85.0, "points": 360 },
+    { "prefab": "PlasticTrophyRack", "pos": [3.95, 0.59, -2.25], "rotY": -85.0, "points": 360 },
+    { "prefab": "MiniFridge", "pos": [-3.95, 0.42, -3.35], "rotY": 85.0, "points": 420 },
+    { "prefab": "PizzaBoxStack", "pos": [-3.95, 0.92, -3.35], "rotY": 65.0, "points": 340 },
+    { "prefab": "OfficeShredder", "pos": [3.95, 0.34, -3.35], "rotY": -85.0, "points": 560 },
+
+    { "prefab": "VendingMachine", "pos": [-2.35, 0.89, -4.65], "rotY": 6.0, "points": 740 },
+    { "prefab": "VendingMachine", "pos": [-1.25, 0.89, -4.72], "rotY": 4.0, "points": 740 },
+    { "prefab": "OfficeFridgeTall", "pos": [0.15, 0.86, -4.72], "rotY": 0.0, "points": 660 },
+    { "prefab": "OfficeFridgeTall", "pos": [1.25, 0.86, -4.72], "rotY": -4.0, "points": 660 },
+    { "prefab": "WaterCooler", "pos": [2.25, 0.56, -4.65], "rotY": -8.0, "points": 480 },
+
+    { "prefab": "CredenzaCabinet", "pos": [3.55, 0.38, -4.55], "rotY": -18.0, "points": 440 },
+    { "prefab": "Microwave", "pos": [3.25, 0.92, -4.50], "rotY": -18.0, "points": 440 },
+    { "prefab": "CoffeeUrn", "pos": [3.85, 1.04, -4.60], "rotY": -18.0, "points": 490 },
+    { "prefab": "FireExtinguisher", "pos": [-3.45, 0.30, -4.65], "rotY": 20.0, "points": 520 },
+    { "prefab": "PottedSnakePlant", "pos": [-4.35, 0.52, -4.45], "rotY": 0.0, "points": 260 },
+    { "prefab": "CoatRack", "pos": [4.45, 0.86, -1.35], "rotY": -25.0, "points": 280 },
+
+    { "prefab": "FluorescentFixture", "pos": [-1.55, 3.72, -1.65], "rotY": 0.0 },
+    { "prefab": "FluorescentFixture", "pos": [1.55, 3.72, -1.65], "rotY": 0.0 },
+    { "prefab": "FluorescentFixture", "pos": [-1.55, 3.72, -3.95], "rotY": 0.0 },
+    { "prefab": "FluorescentFixture", "pos": [1.55, 3.72, -3.95], "rotY": 0.0 }
+  ]
+}
