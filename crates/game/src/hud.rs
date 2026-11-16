@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 
 use crate::destruction::{PendingPopups, ScoreState};
 use crate::flip::FlipTracker;
@@ -15,7 +16,16 @@ pub struct ScoreText;
 pub struct ComboText;
 
 #[derive(Component)]
+pub struct ScoreFeedText;
+
+#[derive(Component)]
 pub struct PromptOverlay;
+
+#[derive(Component)]
+pub struct SettlingBanner;
+
+#[derive(Component)]
+pub struct SettlingText;
 
 #[derive(Component)]
 pub struct PowerBarFill;
@@ -90,6 +100,46 @@ pub fn setup_hud(mut commands: Commands) {
                     ..default()
                 },
                 TextColor(Color::srgb(0.98, 0.45, 0.35)),
+            ));
+            parent.spawn((
+                ScoreFeedText,
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(12.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.95, 0.78, 0.28)),
+            ));
+        });
+
+    // Bottom-center settling indicator (visible in Flipping)
+    commands
+        .spawn((
+            SettlingBanner,
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(24.0),
+                left: Val::Percent(50.0),
+                margin: UiRect::left(Val::Px(-130.0)),
+                width: Val::Px(260.0),
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                justify_content: JustifyContent::Center,
+                display: Display::None,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.05, 0.06, 0.09, 0.86)),
+            BorderColor::all(Color::srgb(0.55, 0.88, 0.96)),
+        ))
+        .with_children(|b| {
+            b.spawn((
+                SettlingText,
+                Text::new("CHAOS IN PROGRESS..."),
+                TextFont {
+                    font_size: FontSize::Px(13.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.55, 0.88, 0.96)),
             ));
         });
 
@@ -175,7 +225,7 @@ pub fn setup_hud(mut commands: Commands) {
         ))
         .with_children(|card| {
             card.spawn((
-                Text::new("DESK FLIPPED!"),
+                Text::new("FLIP COMPLETE!"),
                 TextFont {
                     font_size: FontSize::Px(22.0),
                     ..default()
@@ -252,45 +302,24 @@ pub fn update_hud(
     score: Res<ScoreState>,
     tracker: Res<FlipTracker>,
     mut hud_state: ResMut<HudState>,
-    mut scenario_q: Query<
+    mut text_q: Query<(
         &mut Text,
-        (
-            With<ScenarioText>,
-            Without<ScoreText>,
-            Without<ComboText>,
-            Without<SettledStatsText>,
-        ),
-    >,
-    mut score_q: Query<
-        &mut Text,
-        (
-            With<ScoreText>,
-            Without<ScenarioText>,
-            Without<ComboText>,
-            Without<SettledStatsText>,
-        ),
-    >,
-    mut combo_q: Query<
-        &mut Text,
-        (
-            With<ComboText>,
-            Without<ScenarioText>,
-            Without<ScoreText>,
-            Without<SettledStatsText>,
-        ),
-    >,
-    mut stats_q: Query<
-        &mut Text,
-        (
-            With<SettledStatsText>,
-            Without<ScenarioText>,
-            Without<ScoreText>,
-            Without<ComboText>,
-        ),
-    >,
-    mut prompt_q: Query<&mut Node, (With<PromptOverlay>, Without<SettledOverlay>, Without<PowerBarFill>)>,
-    mut settled_q: Query<&mut Node, (With<SettledOverlay>, Without<PromptOverlay>, Without<PowerBarFill>)>,
-    mut power_q: Query<&mut Node, (With<PowerBarFill>, Without<PromptOverlay>, Without<SettledOverlay>)>,
+        &mut TextFont,
+        &mut TextColor,
+        Option<&ScenarioText>,
+        Option<&ScoreText>,
+        Option<&ComboText>,
+        Option<&ScoreFeedText>,
+        Option<&SettlingText>,
+        Option<&SettledStatsText>,
+    )>,
+    mut node_q: Query<(
+        &mut Node,
+        Option<&PromptOverlay>,
+        Option<&SettlingBanner>,
+        Option<&SettledOverlay>,
+        Option<&PowerBarFill>,
+    )>,
 ) {
     let dt = time.delta_secs();
     let target = score.total_score as f32;
@@ -299,51 +328,79 @@ pub fn update_hud(
         hud_state.displayed_score = target;
     }
 
-    if let Ok(mut text) = scenario_q.single_mut() {
-        text.0 = format!("{}  [1/2]", scenario.0.title());
-    }
+    let rank = match score.total_score {
+        s if s >= 6000 => "S  // PURE MENACE",
+        s if s >= 3500 => "A  // EXECUTIVE RAGE",
+        s if s >= 1800 => "B  // DESK DISASTER",
+        s if s >= 600 => "C  // MILD TANTRUM",
+        _ => "D  // POLITE NUDGE",
+    };
 
-    if let Ok(mut text) = score_q.single_mut() {
-        text.0 = format!("SCORE  {:05}", hud_state.displayed_score.round() as u32);
-    }
-
-    if let Ok(mut combo) = combo_q.single_mut() {
-        if score.combo > 1 {
-            combo.0 = format!("COMBO  x{}", score.combo);
-        } else {
-            combo.0.clear();
-        }
-    }
-
-    if let Ok(mut prompt_node) = prompt_q.single_mut() {
-        prompt_node.display = if *phase.get() == GamePhase::Ready {
-            Display::Flex
-        } else {
-            Display::None
-        };
-    }
-
-    if let Ok(mut power_node) = power_q.single_mut() {
-        power_node.width = Val::Percent((tracker.live_power * 100.0).clamp(0.0, 100.0));
-    }
-
-    if let Ok(mut settled_node) = settled_q.single_mut() {
-        settled_node.display = if *phase.get() == GamePhase::Settled {
-            Display::Flex
-        } else {
-            Display::None
-        };
-    }
-
-    if *phase.get() == GamePhase::Settled {
-        if let Ok(mut stats) = stats_q.single_mut() {
-            stats.0 = format!(
-                "SCORE: {}\nDESTROYED: {}   TOPPLED: {}\nMAX COMBO: x{}",
+    for (mut text, mut font, mut color, is_scen, is_score, is_combo, is_feed, is_settle, is_stats) in
+        &mut text_q
+    {
+        if is_scen.is_some() {
+            text.0 = format!("{}  [1/2]", scenario.0.title());
+        } else if is_score.is_some() {
+            text.0 = format!("SCORE  {:05}", hud_state.displayed_score.round() as u32);
+            font.font_size = FontSize::Px(20.0 + score.score_pulse * 4.0);
+            color.0 = if score.score_pulse > 0.25 {
+                Color::srgb(1.0, 0.86, 0.30)
+            } else {
+                Color::srgb(0.98, 0.94, 0.82)
+            };
+        } else if is_combo.is_some() {
+            text.0 = if score.combo > 1 {
+                format!("COMBO  x{}", score.combo)
+            } else {
+                String::new()
+            };
+        } else if is_feed.is_some() {
+            text.0 = score
+                .recent_feed
+                .iter()
+                .map(|e| e.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+        } else if is_settle.is_some() {
+            text.0 = if score.settle_timer > 0.1 || score.elapsed_since_flip > 3.0 {
+                "SETTLING...".to_string()
+            } else {
+                "CHAOS IN PROGRESS...".to_string()
+            };
+        } else if is_stats.is_some() && *phase.get() == GamePhase::Settled {
+            text.0 = format!(
+                "RANK:  {}\nSCORE: {}\nDESTROYED: {}   TOPPLED: {}\nMAX COMBO: x{}",
+                rank,
                 score.total_score,
                 score.items_destroyed,
                 score.items_toppled,
                 score.max_combo.max(1),
             );
+        }
+    }
+
+    for (mut node, is_prompt, is_settling, is_settled, is_power) in &mut node_q {
+        if is_prompt.is_some() {
+            node.display = if *phase.get() == GamePhase::Ready {
+                Display::Flex
+            } else {
+                Display::None
+            };
+        } else if is_settling.is_some() {
+            node.display = if *phase.get() == GamePhase::Flipping {
+                Display::Flex
+            } else {
+                Display::None
+            };
+        } else if is_settled.is_some() {
+            node.display = if *phase.get() == GamePhase::Settled {
+                Display::Flex
+            } else {
+                Display::None
+            };
+        } else if is_power.is_some() {
+            node.width = Val::Percent((tracker.live_power * 100.0).clamp(0.0, 100.0));
         }
     }
 }
@@ -352,6 +409,7 @@ pub fn spawn_score_popups(
     mut commands: Commands,
     mut pending: ResMut<PendingPopups>,
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    win_q: Query<&Window, With<PrimaryWindow>>,
 ) {
     if pending.0.is_empty() {
         return;
@@ -360,9 +418,17 @@ pub fn spawn_score_popups(
         pending.0.clear();
         return;
     };
+    let (max_x, max_y) = win_q
+        .single()
+        .map(|w| ((w.width() - 180.0).max(80.0), (w.height() - 60.0).max(80.0)))
+        .unwrap_or((780.0, 480.0));
 
     for item in pending.0.drain(..) {
-        if let Ok(screen_pos) = camera.world_to_viewport(cam_tf, item.world_pos) {
+        if let Ok(raw_pos) = camera.world_to_viewport(cam_tf, item.world_pos) {
+            let screen_pos = Vec2::new(
+                raw_pos.x.clamp(48.0, max_x),
+                raw_pos.y.clamp(72.0, max_y),
+            );
             let font_size = if item.big { 18.0 } else { 14.0 };
             commands.spawn((
                 FloatingPopup {
