@@ -1,3 +1,4 @@
+import { getAnalytics, isSupported, type Analytics } from "firebase/analytics";
 import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
 import { getAuth, type Auth } from "firebase/auth";
 import { getFirestore, type Firestore } from "firebase/firestore";
@@ -19,6 +20,9 @@ const firebaseConfig = {
   appId:
     process.env.NEXT_PUBLIC_FIREBASE_APP_ID ||
     "1:445921354660:web:0b119297de424050245731",
+  ...(process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID
+    ? { measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID }
+    : {}),
 };
 
 export type FirebaseServices = {
@@ -28,6 +32,23 @@ export type FirebaseServices = {
 };
 
 let cachedServices: FirebaseServices | null = null;
+let analyticsPromise: Promise<Analytics | null> | null = null;
+
+/**
+ * Lazily initializes Firebase Analytics when running in a supported browser
+ * environment. Safe to call multiple times.
+ */
+export function initFirebaseAnalytics(app: FirebaseApp): Promise<Analytics | null> {
+  if (typeof window === "undefined") {
+    return Promise.resolve(null);
+  }
+  if (!analyticsPromise) {
+    analyticsPromise = isSupported()
+      .then((supported) => (supported ? getAnalytics(app) : null))
+      .catch(() => null);
+  }
+  return analyticsPromise;
+}
 
 /**
  * Returns initialized Firebase client services in the browser, or `null` during
@@ -44,6 +65,7 @@ export function getFirebaseServices(): FirebaseServices | null {
   const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
   const auth = getAuth(app);
   const db = getFirestore(app);
+  void initFirebaseAnalytics(app);
 
   cachedServices = { app, auth, db };
   return cachedServices;
