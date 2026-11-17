@@ -183,9 +183,12 @@ pub fn handle_flip_gesture(
     let now = time.elapsed_secs();
     let pressed_just_now = mouse.just_pressed(MouseButton::Left) || touches.any_just_pressed();
     let held = mouse.pressed(MouseButton::Left) || touches.iter().next().is_some();
-    let released = mouse.just_released(MouseButton::Left) || touches.any_just_released();
+    let canceled = touches.any_just_canceled() || !window.focused;
+    let released = mouse.just_released(MouseButton::Left)
+        || touches.any_just_released()
+        || (tracker.dragging && !held && !canceled);
 
-    if pressed_just_now {
+    if pressed_just_now && !canceled {
         tracker.dragging = true;
         tracker.samples.clear();
         if let Some(pos) = pointer_pos {
@@ -193,6 +196,20 @@ pub fn handle_flip_gesture(
             tracker.push_sample(pos, now);
             joke_rng.advance_round((pos.x * 100.0 + now * 1000.0) as u64);
         }
+    }
+
+    if tracker.dragging && canceled {
+        tracker.dragging = false;
+        tracker.samples.clear();
+        tracker.live_power = 0.0;
+        tracker.live_aim = 0.0;
+        for (rest, mut tf, mut lv, mut av) in &mut desk_q {
+            lv.0 = Vec3::ZERO;
+            av.0 = Vec3::ZERO;
+            tf.translation = rest.pos;
+            tf.rotation = rest.rot;
+        }
+        return;
     }
 
     if tracker.dragging && held {

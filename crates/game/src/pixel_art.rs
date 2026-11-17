@@ -388,8 +388,8 @@ fn make_cubicle_fabric_image() -> Image {
     let mut c = PixelCanvas::new(w, h, [62, 76, 94, 255]);
     for y in 0..h {
         for x in 0..w {
-            let weave = (x + y) % 2 == 0;
-            let slub = hash_u32(x, y, 99) % 11 == 0;
+            let weave = (x + y).is_multiple_of(2);
+            let slub = hash_u32(x, y, 99).is_multiple_of(11);
             let rgb = if slub {
                 [74, 89, 108]
             } else if weave {
@@ -487,12 +487,12 @@ fn make_crt_cracked_image() -> Image {
             let n = hash_u32(x as u32, y as u32, 313);
             let bar = y == 7 || y == 8 || y == 16;
             let rgb = if bar {
-                if n % 3 == 0 {
+                if n.is_multiple_of(3) {
                     [250, 90, 120]
                 } else {
                     [95, 250, 235]
                 }
-            } else if n % 5 == 0 {
+            } else if n.is_multiple_of(5) {
                 [48, 86, 94]
             } else {
                 [20, 34, 42]
@@ -777,7 +777,7 @@ fn make_city_skyline_image() -> Image {
         c.rect(tx, top_y, tw, 36 - top_y, [18, 22, 34]);
         for wy in ((top_y + 2)..34).step_by(3) {
             for wx in ((tx + 2)..(tx + tw - 1)).step_by(2) {
-                if hash_u32(wx as u32, wy as u32, 77) % 3 != 0 {
+                if !hash_u32(wx as u32, wy as u32, 77).is_multiple_of(3) {
                     c.set_rgb(wx, wy, [252, 206, 108]);
                 }
             }

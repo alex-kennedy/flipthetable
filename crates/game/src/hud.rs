@@ -47,11 +47,9 @@ pub struct TallyBarFill;
 
 #[derive(Component)]
 pub struct FloatingPopup {
-    pub origin_screen: Vec2,
     pub vel_screen: Vec2,
     pub age: f32,
     pub duration: f32,
-    pub base_font_size: f32,
     pub base_color: Color,
 }
 
@@ -107,6 +105,7 @@ const OI_MIN: u32 = 14_500;
 const TI_MIN: u32 = u32::MAX;
 
 fn rank_tier_info(score: u32) -> (u8, &'static str, &'static str, Color, Color) {
+    #[allow(clippy::absurd_extreme_comparisons)]
     if score >= TI_MIN {
         (
             4,
@@ -265,7 +264,7 @@ pub fn setup_hud(
                     Text::new("TOP 5 HIGH SCORES"),
                     TextFont {
                         font: font.clone().into(),
-                        font_size: FontSize::Px(9.5),
+                        font_size: FontSize::Px(10.0),
                         ..default()
                     },
                     TextColor(Color::srgb(0.95, 0.75, 0.25)),
@@ -331,7 +330,7 @@ pub fn setup_hud(
                             Text::new("MY HIGH SCORE"),
                             TextFont {
                                 font: font.clone().into(),
-                                font_size: FontSize::Px(9.5),
+                                font_size: FontSize::Px(10.0),
                                 ..default()
                             },
                             TextColor(Color::srgb(0.55, 0.88, 0.96)),
@@ -342,7 +341,7 @@ pub fn setup_hud(
                             Text::new("00000"),
                             TextFont {
                                 font: font.clone().into(),
-                                font_size: FontSize::Px(10.5),
+                                font_size: FontSize::Px(11.0),
                                 ..default()
                             },
                             TextColor(Color::srgb(1.0, 0.86, 0.30)),
@@ -411,7 +410,7 @@ pub fn setup_hud(
                 Text::new("SWIPE UP + ANGLE TO AIM & FLIP!"),
                 TextFont {
                     font: font.clone().into(),
-                    font_size: FontSize::Px(11.5),
+                    font_size: FontSize::Px(12.0),
                     ..default()
                 },
                 TextColor(Color::srgb(0.98, 0.94, 0.82)),
@@ -504,7 +503,7 @@ pub fn setup_hud(
                             Text::new(""),
                             TextFont {
                                 font: font.clone().into(),
-                                font_size: FontSize::Px(9.5),
+                                font_size: FontSize::Px(10.0),
                                 ..default()
                             },
                             TextColor(Color::srgb(0.86, 0.90, 0.95)),
@@ -725,6 +724,56 @@ pub fn setup_hud(
         });
 }
 
+fn set_text_if_changed(text: &mut Mut<Text>, next: &str) {
+    let cur: &Mut<Text> = text;
+    if cur.0 != next {
+        text.0.clear();
+        text.0.push_str(next);
+    }
+}
+
+fn set_text_color_if_changed(color: &mut Mut<TextColor>, next: Color) {
+    let cur: &Mut<TextColor> = color;
+    if cur.0 != next {
+        color.0 = next;
+    }
+}
+
+fn set_ui_scale_if_changed(ui_tf: &mut Mut<UiTransform>, next: f32) {
+    let cur: &Mut<UiTransform> = ui_tf;
+    if (cur.scale.x - next).abs() > 0.001 || (cur.scale.y - next).abs() > 0.001 {
+        ui_tf.scale = Vec2::splat(next);
+    }
+}
+
+fn set_display_if_changed(node: &mut Mut<Node>, next: Display) {
+    let cur: &Mut<Node> = node;
+    if cur.display != next {
+        node.display = next;
+    }
+}
+
+fn set_width_if_changed(node: &mut Mut<Node>, next: Val) {
+    let cur: &Mut<Node> = node;
+    if cur.width != next {
+        node.width = next;
+    }
+}
+
+fn set_bg_if_changed(bg: &mut Mut<BackgroundColor>, next: Color) {
+    let cur: &Mut<BackgroundColor> = bg;
+    if cur.0 != next {
+        bg.0 = next;
+    }
+}
+
+fn set_border_if_changed(border: &mut Mut<BorderColor>, next: BorderColor) {
+    let cur: &Mut<BorderColor> = border;
+    if **cur != next {
+        **border = next;
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn update_hud(
     time: Res<Time>,
@@ -737,7 +786,7 @@ pub fn update_hud(
     mut hud_state: ResMut<HudState>,
     mut audio: ResMut<RetroAudio>,
     mut camera_rig: ResMut<CameraRig>,
-    mut text_q: Query<(&mut Text, &mut TextFont, &mut TextColor, &HudTextRole)>,
+    mut text_q: Query<(&mut Text, &mut TextColor, &mut UiTransform, &HudTextRole)>,
     mut node_q: Query<(
         &mut Node,
         &mut BackgroundColor,
@@ -847,108 +896,122 @@ pub fn update_hud(
     let scen_title = registry.title_for(&scenario.0);
     let pulse_flash = (time.elapsed_secs() * 12.0).sin() > 0.0;
 
-    for (mut text, mut font, mut color, role) in &mut text_q {
+    for (mut text, mut color, mut ui_tf, role) in &mut text_q {
         match *role {
             HudTextRole::Scenario => {
-                text.0 = format!("{scen_title}  [1-6]");
+                set_text_if_changed(&mut text, &format!("{scen_title}  [1-6]"));
             }
             HudTextRole::Score => {
-                text.0 = format!("SCORE {:05}", hud_state.displayed_score.round() as u32);
-                font.font_size = FontSize::Px(18.0 + score.score_pulse * 4.0);
-                color.0 = if score.score_pulse > 0.25 {
+                set_text_if_changed(
+                    &mut text,
+                    &format!("SCORE {:05}", hud_state.displayed_score.round() as u32),
+                );
+                set_ui_scale_if_changed(&mut ui_tf, 1.0 + score.score_pulse * (4.0 / 18.0));
+                let next_col = if score.score_pulse > 0.25 {
                     Color::srgb(1.0, 0.86, 0.30)
                 } else {
                     Color::srgb(0.98, 0.94, 0.82)
                 };
+                set_text_color_if_changed(&mut color, next_col);
             }
             HudTextRole::Combo => {
-                text.0 = if score.combo > 1 {
-                    format!("CHAIN x{}", score.combo)
+                if score.combo > 1 {
+                    set_text_if_changed(&mut text, &format!("CHAIN x{}", score.combo));
                 } else {
-                    String::new()
-                };
+                    set_text_if_changed(&mut text, "");
+                }
             }
             HudTextRole::ScoreFeed => {
-                text.0 = score
-                    .recent_feed
-                    .iter()
-                    .map(|e| e.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                if score.recent_feed.is_empty() {
+                    set_text_if_changed(&mut text, "");
+                } else {
+                    let feed = score
+                        .recent_feed
+                        .iter()
+                        .map(|e| e.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    set_text_if_changed(&mut text, &feed);
+                }
             }
             HudTextRole::TopScoreName(idx) => {
                 if let Some(row) = leaderboard.top_scores.get(idx) {
                     let handle = truncate_handle(&row.username, 14);
-                    text.0 = format!("{}. {}", idx + 1, handle);
-                    color.0 = if row.is_me {
+                    set_text_if_changed(&mut text, &format!("{}. {}", idx + 1, handle));
+                    let next_col = if row.is_me {
                         Color::srgb(0.55, 0.88, 0.96)
                     } else {
                         Color::srgb(0.92, 0.90, 0.84)
                     };
+                    set_text_color_if_changed(&mut color, next_col);
                 } else if idx == 0 && leaderboard.loading {
-                    text.0 = "LOADING...".to_string();
-                    color.0 = Color::srgb(0.55, 0.62, 0.74);
+                    set_text_if_changed(&mut text, "LOADING...");
+                    set_text_color_if_changed(&mut color, Color::srgb(0.55, 0.62, 0.74));
                 } else {
-                    text.0 = format!("{}. ---", idx + 1);
-                    color.0 = Color::srgb(0.42, 0.46, 0.56);
+                    set_text_if_changed(&mut text, &format!("{}. ---", idx + 1));
+                    set_text_color_if_changed(&mut color, Color::srgb(0.42, 0.46, 0.56));
                 }
             }
             HudTextRole::TopScoreValue(idx) => {
                 if let Some(row) = leaderboard.top_scores.get(idx) {
-                    text.0 = format!("{:05}", row.score);
-                    color.0 = if row.is_me {
+                    set_text_if_changed(&mut text, &format!("{:05}", row.score));
+                    let next_col = if row.is_me {
                         Color::srgb(0.55, 0.88, 0.96)
                     } else {
                         Color::srgb(0.98, 0.82, 0.28)
                     };
+                    set_text_color_if_changed(&mut color, next_col);
                 } else {
-                    text.0 = "-----".to_string();
-                    color.0 = Color::srgb(0.42, 0.46, 0.56);
+                    set_text_if_changed(&mut text, "-----");
+                    set_text_color_if_changed(&mut color, Color::srgb(0.42, 0.46, 0.56));
                 }
             }
             HudTextRole::MyHighScore => {
                 let live_round = hud_state.displayed_score.round() as u32;
                 let best = leaderboard.my_high_score.max(live_round);
-                text.0 = format!("{:05}", best);
-                color.0 = if live_round > leaderboard.my_high_score && live_round > 0 {
+                set_text_if_changed(&mut text, &format!("{:05}", best));
+                let next_col = if live_round > leaderboard.my_high_score && live_round > 0 {
                     Color::srgb(0.45, 0.98, 0.62)
                 } else {
                     Color::srgb(1.0, 0.86, 0.30)
                 };
+                set_text_color_if_changed(&mut color, next_col);
             }
             HudTextRole::PromptHint => {
-                if tracker.dragging && tracker.live_power > 0.04 {
+                let next_hint = if tracker.dragging && tracker.live_power > 0.04 {
                     let a = tracker.live_aim;
-                    text.0 = if a < -0.45 {
-                        "<<< HARD LEFT FLANK!".to_string()
+                    if a < -0.45 {
+                        "<<< HARD LEFT FLANK!"
                     } else if a < -0.16 {
-                        "<< AIMING LEFT".to_string()
+                        "<< AIMING LEFT"
                     } else if a > 0.45 {
-                        "HARD RIGHT FLANK! >>>".to_string()
+                        "HARD RIGHT FLANK! >>>"
                     } else if a > 0.16 {
-                        "AIMING RIGHT >>".to_string()
+                        "AIMING RIGHT >>"
                     } else {
-                        "^ STRAIGHT DOWN CENTER ^".to_string()
-                    };
+                        "^ STRAIGHT DOWN CENTER ^"
+                    }
                 } else {
-                    text.0 = "SWIPE UP + ANGLE TO AIM & FLIP!".to_string();
-                }
+                    "SWIPE UP + ANGLE TO AIM & FLIP!"
+                };
+                set_text_if_changed(&mut text, next_hint);
             }
             HudTextRole::Settling => {
-                text.0 = if score.settle_timer > 0.05 || score.elapsed_since_flip > 2.0 {
-                    "CALIBRATING...".to_string()
+                let next_msg = if score.settle_timer > 0.05 || score.elapsed_since_flip > 2.0 {
+                    "CALIBRATING..."
                 } else {
-                    "RESTRUCTURING IN PROGRESS...".to_string()
+                    "RESTRUCTURING IN PROGRESS..."
                 };
+                set_text_if_changed(&mut text, next_msg);
             }
             HudTextRole::TallyHeader => {
                 if is_settled {
                     if hud_state.tally_verdict_slammed && final_tier == 0 {
-                        text.0 = "HR PERFORMANCE PIP // FAIL".to_string();
-                        color.0 = Color::srgb(0.76, 0.34, 0.34);
+                        set_text_if_changed(&mut text, "HR PERFORMANCE PIP // FAIL");
+                        set_text_color_if_changed(&mut color, Color::srgb(0.76, 0.34, 0.34));
                     } else {
-                        text.0 = "ANNUAL IMPACT CALIBRATION".to_string();
-                        color.0 = Color::srgb(0.95, 0.75, 0.25);
+                        set_text_if_changed(&mut text, "ANNUAL IMPACT CALIBRATION");
+                        set_text_color_if_changed(&mut color, Color::srgb(0.95, 0.75, 0.25));
                     }
                 }
             }
@@ -956,77 +1019,87 @@ pub fn update_hud(
                 if is_settled && tally_age >= row_times[idx] {
                     let local_t = ((tally_age - row_times[idx]) / 0.10).clamp(0.0, 1.0);
                     let slam_scale = 1.40 - 0.40 * local_t;
-                    text.0 = row_defs[idx].0.clone();
-                    font.font_size = FontSize::Px(9.5 * slam_scale);
-                    color.0 = if final_tier == 0 && idx >= 2 {
+                    set_text_if_changed(&mut text, &row_defs[idx].0);
+                    set_ui_scale_if_changed(&mut ui_tf, slam_scale);
+                    let next_col = if final_tier == 0 && idx >= 2 {
                         Color::srgb(0.62, 0.50, 0.50)
                     } else {
                         Color::srgb(0.88, 0.92, 0.96)
                     };
+                    set_text_color_if_changed(&mut color, next_col);
                 } else {
-                    text.0.clear();
+                    set_text_if_changed(&mut text, "");
+                    set_ui_scale_if_changed(&mut ui_tf, 1.0);
                 }
             }
             HudTextRole::TallyRowValue(idx) => {
                 if is_settled && tally_age >= row_times[idx] {
                     let local_t = ((tally_age - row_times[idx]) / 0.10).clamp(0.0, 1.0);
                     let slam_scale = 1.55 - 0.55 * local_t;
-                    text.0 = row_defs[idx].1.clone();
-                    font.font_size = FontSize::Px(11.0 * slam_scale);
-                    color.0 = row_defs[idx].2;
+                    set_text_if_changed(&mut text, &row_defs[idx].1);
+                    set_ui_scale_if_changed(&mut ui_tf, slam_scale);
+                    set_text_color_if_changed(&mut color, row_defs[idx].2);
                 } else {
-                    text.0.clear();
+                    set_text_if_changed(&mut text, "");
+                    set_ui_scale_if_changed(&mut ui_tf, 1.0);
                 }
             }
             HudTextRole::TallyTier(tier_id) => {
                 if is_settled {
                     let active = tier_id == live_tier;
-                    font.font_size = FontSize::Px(if active { 10.5 } else { 8.5 });
-                    color.0 = if active {
+                    set_ui_scale_if_changed(&mut ui_tf, if active { 1.18 } else { 0.95 });
+                    let next_col = if active {
                         live_bar_col
                     } else if tier_id < live_tier {
                         Color::srgb(0.76, 0.80, 0.88)
                     } else {
                         Color::srgb(0.42, 0.46, 0.56)
                     };
+                    set_text_color_if_changed(&mut color, next_col);
+                } else {
+                    set_ui_scale_if_changed(&mut ui_tf, 1.0);
                 }
             }
             HudTextRole::TallyTotal => {
                 if is_settled {
-                    text.0 = format!("{:05}", animated_total);
-                    color.0 = if final_tier == 0 && hud_state.tally_verdict_slammed {
+                    set_text_if_changed(&mut text, &format!("{:05}", animated_total));
+                    let next_col = if final_tier == 0 && hud_state.tally_verdict_slammed {
                         Color::srgb(0.72, 0.36, 0.36)
                     } else {
                         live_bar_col
                     };
+                    set_text_color_if_changed(&mut color, next_col);
                 }
             }
             HudTextRole::TallyStamp => {
                 if is_settled && hud_state.tally_verdict_slammed {
                     let local_t = ((tally_age - verdict_time) / 0.12).clamp(0.0, 1.0);
                     let slam_scale = 1.85 - 0.85 * local_t;
-                    let base_px = if final_tier == 0 { 13.5 } else { 15.0 };
-                    text.0 = rank_name.to_string();
-                    font.font_size = FontSize::Px(base_px * slam_scale);
-                    color.0 = if final_tier == 4 && pulse_flash {
+                    let tier_mul = if final_tier == 0 { 0.90 } else { 1.0 };
+                    set_text_if_changed(&mut text, rank_name);
+                    set_ui_scale_if_changed(&mut ui_tf, tier_mul * slam_scale);
+                    let next_col = if final_tier == 4 && pulse_flash {
                         accent_col
                     } else {
                         rank_col
                     };
+                    set_text_color_if_changed(&mut color, next_col);
                 } else {
-                    text.0.clear();
+                    set_text_if_changed(&mut text, "");
+                    set_ui_scale_if_changed(&mut ui_tf, 1.0);
                 }
             }
             HudTextRole::TallySub => {
                 if is_settled && hud_state.tally_verdict_slammed {
-                    text.0 = rank_sub.to_string();
-                    color.0 = if final_tier == 0 {
+                    set_text_if_changed(&mut text, rank_sub);
+                    let next_col = if final_tier == 0 {
                         Color::srgb(0.68, 0.48, 0.48)
                     } else {
                         Color::srgb(0.84, 0.88, 0.94)
                     };
+                    set_text_color_if_changed(&mut color, next_col);
                 } else {
-                    text.0.clear();
+                    set_text_if_changed(&mut text, "");
                 }
             }
         }
@@ -1036,58 +1109,81 @@ pub fn update_hud(
         &mut node_q
     {
         if is_prompt.is_some() {
-            node.display = if *phase.get() == GamePhase::Ready {
-                Display::Flex
-            } else {
-                Display::None
-            };
+            set_display_if_changed(
+                &mut node,
+                if *phase.get() == GamePhase::Ready {
+                    Display::Flex
+                } else {
+                    Display::None
+                },
+            );
         } else if is_settling.is_some() {
-            node.display = if *phase.get() == GamePhase::Flipping {
-                Display::Flex
-            } else {
-                Display::None
-            };
+            set_display_if_changed(
+                &mut node,
+                if *phase.get() == GamePhase::Flipping {
+                    Display::Flex
+                } else {
+                    Display::None
+                },
+            );
         } else if is_settled_card.is_some() {
-            node.display = if is_settled {
-                Display::Flex
-            } else {
-                Display::None
-            };
+            set_display_if_changed(
+                &mut node,
+                if is_settled {
+                    Display::Flex
+                } else {
+                    Display::None
+                },
+            );
             if is_settled {
-                if hud_state.tally_verdict_slammed {
+                let (desired_bg, desired_border) = if hud_state.tally_verdict_slammed {
                     if final_tier == 0 {
-                        *bg = BackgroundColor(Color::srgba(0.08, 0.05, 0.06, 0.96));
-                        *border = BorderColor::all(Color::srgb(0.52, 0.22, 0.24));
+                        (
+                            Color::srgba(0.08, 0.05, 0.06, 0.96),
+                            BorderColor::all(Color::srgb(0.52, 0.22, 0.24)),
+                        )
                     } else if final_tier == 4 {
-                        *bg = BackgroundColor(Color::srgba(0.05, 0.04, 0.10, 0.96));
-                        *border = BorderColor::all(if pulse_flash { rank_col } else { accent_col });
+                        (
+                            Color::srgba(0.05, 0.04, 0.10, 0.96),
+                            BorderColor::all(if pulse_flash { rank_col } else { accent_col }),
+                        )
                     } else {
-                        *bg = BackgroundColor(Color::srgba(0.04, 0.05, 0.08, 0.95));
-                        *border = BorderColor::all(rank_col);
+                        (
+                            Color::srgba(0.04, 0.05, 0.08, 0.95),
+                            BorderColor::all(rank_col),
+                        )
                     }
                 } else {
-                    *bg = BackgroundColor(Color::srgba(0.04, 0.05, 0.08, 0.95));
-                    *border = BorderColor::all(Color::srgb(0.95, 0.75, 0.25));
-                }
+                    (
+                        Color::srgba(0.04, 0.05, 0.08, 0.95),
+                        BorderColor::all(Color::srgb(0.95, 0.75, 0.25)),
+                    )
+                };
+                set_bg_if_changed(&mut bg, desired_bg);
+                set_border_if_changed(&mut border, desired_border);
             }
         } else if is_power.is_some() {
             let pct = (tracker.live_power * 100.0).clamp(0.0, 100.0);
-            node.width = Val::Percent(pct);
-            *bg = BackgroundColor(if tracker.live_power < 0.20 {
+            let q_pct = (pct * 10.0).round() / 10.0;
+            set_width_if_changed(&mut node, Val::Percent(q_pct));
+            let desired_bg = if tracker.live_power < 0.20 {
                 Color::srgb(0.72, 0.34, 0.30)
             } else if tracker.live_power < 0.60 {
                 Color::srgb(0.96, 0.76, 0.24)
             } else {
                 Color::srgb(0.36, 0.95, 0.64)
-            });
+            };
+            set_bg_if_changed(&mut bg, desired_bg);
         } else if is_t_bar.is_some() && is_settled {
             let bar_pct = score_to_bar_percent(animated_total);
-            node.width = Val::Percent(bar_pct);
-            *bg = BackgroundColor(if live_tier == 4 && pulse_flash {
+            let q_pct = (bar_pct * 10.0).round() / 10.0;
+            set_width_if_changed(&mut node, Val::Percent(q_pct));
+            let desired_bg = if live_tier == 4 && pulse_flash {
                 Color::srgb(1.0, 0.88, 0.28)
             } else {
                 live_bar_col
-            });
+            };
+            set_bg_if_changed(&mut bg, desired_bg);
         }
     }
 }
@@ -1125,18 +1221,20 @@ pub fn spawn_score_popups(
                 (low_pos.x * scale_x).clamp(48.0, max_x),
                 (low_pos.y * scale_y + stagger_y).clamp(76.0, max_y),
             );
-            let dir_x = if hud_state.popup_seq % 2 == 0 { 1.0 } else { -1.0 };
+            let dir_x = if hud_state.popup_seq.is_multiple_of(2) {
+                1.0
+            } else {
+                -1.0
+            };
             let vx = dir_x * (18.0 + (hud_state.popup_seq % 4) as f32 * 8.0);
             let vy = if item.big { -128.0 } else { -98.0 };
-            let font_size = if item.big { 14.0 } else { 10.5 };
+            let font_size = if item.big { 14.0 } else { 11.0 };
 
             commands.spawn((
                 FloatingPopup {
-                    origin_screen: screen_pos,
                     vel_screen: Vec2::new(vx, vy),
                     age: 0.0,
                     duration: 1.05,
-                    base_font_size: font_size,
                     base_color: item.color,
                 },
                 Node {
@@ -1145,6 +1243,7 @@ pub fn spawn_score_popups(
                     top: Val::Px(screen_pos.y - 12.0),
                     ..default()
                 },
+                UiTransform::from_scale(Vec2::splat(0.75)),
                 Text::new(item.text),
                 TextFont {
                     font: hud_state.pixel_font.clone().into(),
@@ -1161,25 +1260,24 @@ pub fn spawn_score_popups(
 pub fn animate_score_popups(
     mut commands: Commands,
     time: Res<Time>,
-    mut q: Query<(Entity, &mut FloatingPopup, &mut Node, &mut TextFont, &mut TextColor)>,
+    mut q: Query<(Entity, &mut FloatingPopup, &mut UiTransform, &mut TextColor)>,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut popup, mut node, mut font, mut color) in &mut q {
+    for (entity, mut popup, mut ui_tf, mut color) in &mut q {
         popup.age += dt;
         let a = popup.age;
         let t = (a / popup.duration).clamp(0.0, 1.0);
 
-        let pos_x = popup.origin_screen.x + popup.vel_screen.x * a;
-        let pos_y = popup.origin_screen.y + popup.vel_screen.y * a + 0.5 * 145.0 * a * a;
-        node.left = Val::Px(pos_x - 70.0);
-        node.top = Val::Px(pos_y - 12.0);
+        let dx = popup.vel_screen.x * a;
+        let dy = popup.vel_screen.y * a + 0.5 * 145.0 * a * a;
+        ui_tf.translation = Val2::px(dx, dy);
 
         let pop_scale = if t < 0.15 {
             0.75 + (t / 0.15) * 0.50
         } else {
             1.25 - ((t - 0.15) / 0.85) * 0.25
         };
-        font.font_size = FontSize::Px(popup.base_font_size * pop_scale);
+        ui_tf.scale = Vec2::splat(pop_scale);
 
         let alpha = if t > 0.68 {
             1.0 - ((t - 0.68) / 0.32)

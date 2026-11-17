@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+
 use avian3d::prelude::*;
 use bevy::light::NotShadowCaster;
 use bevy::math::Affine2;
 use bevy::prelude::*;
+use bevy::render::render_resource::Face;
 
 use crate::meshes::{
     make_floor_quad_mesh, make_frustum_y_mesh, make_frustum_z_mesh, make_upright_quad_mesh,
@@ -16,6 +19,174 @@ pub struct ScenarioEntity;
 
 #[derive(Component)]
 pub struct PlayerDesk;
+
+pub const LAYER_DEFAULT: u32 = 0b0001;
+pub const LAYER_DESK: u32 = 0b0010;
+pub const LAYER_DEBRIS: u32 = 0b0100;
+
+#[inline]
+fn f32_key(v: f32) -> u32 {
+    if v == 0.0 {
+        0.0_f32.to_bits()
+    } else {
+        v.to_bits()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct MatCacheKey {
+    base_color: [u32; 4],
+    base_tex: Option<AssetId<Image>>,
+    emissive: [u32; 4],
+    emissive_tex: Option<AssetId<Image>>,
+    roughness: u32,
+    metallic: u32,
+    alpha_mode_tag: u8,
+    alpha_mask_bits: u32,
+    unlit: bool,
+    cull_mode: Option<u8>,
+    uv_transform: [u32; 6],
+}
+
+impl MatCacheKey {
+    fn from_mat(mat: &StandardMaterial) -> Self {
+        let bc = mat.base_color.to_srgba();
+        let em = mat.emissive;
+        let (alpha_mode_tag, alpha_mask_bits) = match mat.alpha_mode {
+            AlphaMode::Opaque => (0, 0),
+            AlphaMode::Mask(v) => (1, f32_key(v)),
+            AlphaMode::Blend => (2, 0),
+            AlphaMode::Premultiplied => (3, 0),
+            AlphaMode::AlphaToCoverage => (4, 0),
+            AlphaMode::Add => (5, 0),
+            AlphaMode::Multiply => (6, 0),
+        };
+        let cull_mode = mat.cull_mode.map(|f| match f {
+            Face::Front => 0,
+            Face::Back => 1,
+        });
+        Self {
+            base_color: [
+                f32_key(bc.red),
+                f32_key(bc.green),
+                f32_key(bc.blue),
+                f32_key(bc.alpha),
+            ],
+            base_tex: mat.base_color_texture.as_ref().map(Handle::id),
+            emissive: [
+                f32_key(em.red),
+                f32_key(em.green),
+                f32_key(em.blue),
+                f32_key(em.alpha),
+            ],
+            emissive_tex: mat.emissive_texture.as_ref().map(Handle::id),
+            roughness: f32_key(mat.perceptual_roughness),
+            metallic: f32_key(mat.metallic),
+            alpha_mode_tag,
+            alpha_mask_bits,
+            unlit: mat.unlit,
+            cull_mode,
+            uv_transform: mat.uv_transform.to_cols_array().map(f32_key),
+        }
+    }
+}
+
+#[derive(Resource, Default)]
+pub struct PrefabAssetCache {
+    cuboids: HashMap<[u32; 3], Handle<Mesh>>,
+    cylinders: HashMap<[u32; 2], Handle<Mesh>>,
+    upright_quads: HashMap<[u32; 2], Handle<Mesh>>,
+    floor_quads: HashMap<[u32; 2], Handle<Mesh>>,
+    frustums_y: HashMap<[u32; 5], Handle<Mesh>>,
+    frustums_z: HashMap<[u32; 5], Handle<Mesh>>,
+    materials: HashMap<MatCacheKey, Handle<StandardMaterial>>,
+}
+
+impl PrefabAssetCache {
+    pub fn cuboid(&mut self, meshes: &mut Assets<Mesh>, x: f32, y: f32, z: f32) -> Handle<Mesh> {
+        let key = [f32_key(x), f32_key(y), f32_key(z)];
+        self.cuboids
+            .entry(key)
+            .or_insert_with(|| meshes.add(Cuboid::new(x, y, z)))
+            .clone()
+    }
+
+    pub fn cylinder(&mut self, meshes: &mut Assets<Mesh>, r: f32, h: f32) -> Handle<Mesh> {
+        let key = [f32_key(r), f32_key(h)];
+        self.cylinders
+            .entry(key)
+            .or_insert_with(|| meshes.add(Cylinder::new(r, h)))
+            .clone()
+    }
+
+    pub fn upright_quad(&mut self, meshes: &mut Assets<Mesh>, w: f32, h: f32) -> Handle<Mesh> {
+        let key = [f32_key(w), f32_key(h)];
+        self.upright_quads
+            .entry(key)
+            .or_insert_with(|| meshes.add(make_upright_quad_mesh(w, h)))
+            .clone()
+    }
+
+    pub fn floor_quad(&mut self, meshes: &mut Assets<Mesh>, w: f32, d: f32) -> Handle<Mesh> {
+        let key = [f32_key(w), f32_key(d)];
+        self.floor_quads
+            .entry(key)
+            .or_insert_with(|| meshes.add(make_floor_quad_mesh(w, d)))
+            .clone()
+    }
+
+    pub fn frustum_y(
+        &mut self,
+        meshes: &mut Assets<Mesh>,
+        bottom_xz: Vec2,
+        top_xz: Vec2,
+        height: f32,
+    ) -> Handle<Mesh> {
+        let key = [
+            f32_key(bottom_xz.x),
+            f32_key(bottom_xz.y),
+            f32_key(top_xz.x),
+            f32_key(top_xz.y),
+            f32_key(height),
+        ];
+        self.frustums_y
+            .entry(key)
+            .or_insert_with(|| meshes.add(make_frustum_y_mesh(bottom_xz, top_xz, height)))
+            .clone()
+    }
+
+    pub fn frustum_z(
+        &mut self,
+        meshes: &mut Assets<Mesh>,
+        front_wh: Vec2,
+        back_wh: Vec2,
+        depth: f32,
+    ) -> Handle<Mesh> {
+        let key = [
+            f32_key(front_wh.x),
+            f32_key(front_wh.y),
+            f32_key(back_wh.x),
+            f32_key(back_wh.y),
+            f32_key(depth),
+        ];
+        self.frustums_z
+            .entry(key)
+            .or_insert_with(|| meshes.add(make_frustum_z_mesh(front_wh, back_wh, depth)))
+            .clone()
+    }
+
+    pub fn material(
+        &mut self,
+        materials: &mut Assets<StandardMaterial>,
+        mat: StandardMaterial,
+    ) -> Handle<StandardMaterial> {
+        let key = MatCacheKey::from_mat(&mat);
+        self.materials
+            .entry(key)
+            .or_insert_with(|| materials.add(mat))
+            .clone()
+    }
+}
 
 #[derive(Component, Clone, Copy)]
 pub struct DeskRestPose {
@@ -173,16 +344,18 @@ impl DestructibleProp {
 }
 
 /// Spawns a child box mesh AND a 1px dark inverted-hull pixel outline around it!
+#[allow(clippy::too_many_arguments)]
 fn spawn_outlined_box(
     parent: &mut ChildSpawnerCommands,
     meshes: &mut Assets<Mesh>,
+    cache: &mut PrefabAssetCache,
     shared: &SharedMeshes,
     size: Vec3,
     mat: Handle<StandardMaterial>,
     tf: Transform,
     outline_thickness: f32,
 ) {
-    let box_mesh = meshes.add(Cuboid::new(size.x, size.y, size.z));
+    let box_mesh = cache.cuboid(meshes, size.x, size.y, size.z);
     parent.spawn((Mesh3d(box_mesh.clone()), MeshMaterial3d(mat), tf));
     if outline_thickness > 0.0 {
         let mut out_tf = tf;
@@ -196,23 +369,34 @@ fn spawn_outlined_box(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_scenario_world(
     def: &ScenarioDef,
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    cache: &mut PrefabAssetCache,
     textures: &ProceduralTextures,
     shared: &SharedMeshes,
     joke_rng: &mut CorporateJokeRng,
 ) {
-    spawn_room_architecture(&def.theme, commands, meshes, materials, textures, shared);
-    spawn_player_desk(&def.desk, commands, meshes, materials, textures, shared);
+    spawn_room_architecture(
+        &def.theme,
+        commands,
+        meshes,
+        materials,
+        cache,
+        textures,
+        shared,
+    );
+    spawn_player_desk(&def.desk, commands, meshes, materials, cache, textures, shared);
     for placement in &def.props {
         spawn_prop_prefab(
             placement,
             commands,
             meshes,
             materials,
+            cache,
             textures,
             shared,
             joke_rng,
@@ -243,56 +427,81 @@ fn spawn_room_architecture(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    cache: &mut PrefabAssetCache,
     textures: &ProceduralTextures,
     shared: &SharedMeshes,
 ) {
-    let floor_mat = materials.add(StandardMaterial {
-        base_color_texture: Some(resolve_tiled_texture(&theme.floor_texture, textures)),
-        uv_transform: Affine2::from_scale(Vec2::splat(9.0)),
-        perceptual_roughness: 0.92,
-        ..default()
-    });
-    let wall_mat = materials.add(StandardMaterial {
-        base_color_texture: Some(resolve_tiled_texture(&theme.wall_texture, textures)),
-        uv_transform: Affine2::from_scale(Vec2::new(7.0, 1.0)),
-        perceptual_roughness: 0.88,
-        ..default()
-    });
-    let ceiling_mat = materials.add(StandardMaterial {
-        base_color_texture: Some(resolve_tiled_texture(&theme.ceiling_texture, textures)),
-        uv_transform: Affine2::from_scale(Vec2::splat(7.0)),
-        perceptual_roughness: 0.92,
-        ..default()
-    });
+    let floor_mat = cache.material(
+        materials,
+        StandardMaterial {
+            base_color_texture: Some(resolve_tiled_texture(&theme.floor_texture, textures)),
+            uv_transform: Affine2::from_scale(Vec2::splat(9.0)),
+            perceptual_roughness: 0.92,
+            ..default()
+        },
+    );
+    let wall_mat = cache.material(
+        materials,
+        StandardMaterial {
+            base_color_texture: Some(resolve_tiled_texture(&theme.wall_texture, textures)),
+            uv_transform: Affine2::from_scale(Vec2::new(7.0, 1.0)),
+            perceptual_roughness: 0.88,
+            ..default()
+        },
+    );
+    let ceiling_mat = cache.material(
+        materials,
+        StandardMaterial {
+            base_color_texture: Some(resolve_tiled_texture(&theme.ceiling_texture, textures)),
+            uv_transform: Affine2::from_scale(Vec2::splat(7.0)),
+            perceptual_roughness: 0.92,
+            ..default()
+        },
+    );
     let trim_mat = match theme.trim_texture.as_str() {
-        "hazard_stripe" => materials.add(StandardMaterial {
-            base_color_texture: Some(textures.hazard_stripe.clone()),
-            uv_transform: Affine2::from_scale(Vec2::new(18.0, 1.0)),
-            perceptual_roughness: 0.65,
-            ..default()
-        }),
-        "brass_trim" => materials.add(StandardMaterial {
-            base_color: Color::srgb(0.68, 0.52, 0.24),
-            metallic: 0.55,
-            perceptual_roughness: 0.42,
-            ..default()
-        }),
-        "magenta_led_strip" => materials.add(StandardMaterial {
-            base_color: Color::srgb(0.95, 0.24, 0.72),
-            emissive: LinearRgba::rgb(1.45, 0.18, 0.92),
-            perceptual_roughness: 0.35,
-            ..default()
-        }),
-        "linoleum_cove" => materials.add(StandardMaterial {
-            base_color: Color::srgb(0.24, 0.30, 0.28),
-            perceptual_roughness: 0.78,
-            ..default()
-        }),
-        _ => materials.add(StandardMaterial {
-            base_color: Color::srgb(0.12, 0.15, 0.21),
-            perceptual_roughness: 0.82,
-            ..default()
-        }),
+        "hazard_stripe" => cache.material(
+            materials,
+            StandardMaterial {
+                base_color_texture: Some(textures.hazard_stripe.clone()),
+                uv_transform: Affine2::from_scale(Vec2::new(18.0, 1.0)),
+                perceptual_roughness: 0.65,
+                ..default()
+            },
+        ),
+        "brass_trim" => cache.material(
+            materials,
+            StandardMaterial {
+                base_color: Color::srgb(0.68, 0.52, 0.24),
+                metallic: 0.55,
+                perceptual_roughness: 0.42,
+                ..default()
+            },
+        ),
+        "magenta_led_strip" => cache.material(
+            materials,
+            StandardMaterial {
+                base_color: Color::srgb(0.95, 0.24, 0.72),
+                emissive: LinearRgba::rgb(1.45, 0.18, 0.92),
+                perceptual_roughness: 0.35,
+                ..default()
+            },
+        ),
+        "linoleum_cove" => cache.material(
+            materials,
+            StandardMaterial {
+                base_color: Color::srgb(0.24, 0.30, 0.28),
+                perceptual_roughness: 0.78,
+                ..default()
+            },
+        ),
+        _ => cache.material(
+            materials,
+            StandardMaterial {
+                base_color: Color::srgb(0.12, 0.15, 0.21),
+                perceptual_roughness: 0.82,
+                ..default()
+            },
+        ),
     };
 
     // Floor
@@ -302,7 +511,7 @@ fn spawn_room_architecture(
         Restitution::new(0.42),
         Friction::new(0.36),
         Collider::cuboid(12.0, 0.4, 12.0),
-        Mesh3d(meshes.add(Cuboid::new(12.0, 0.4, 12.0))),
+        Mesh3d(cache.cuboid(meshes, 12.0, 0.4, 12.0)),
         MeshMaterial3d(floor_mat),
         Transform::from_xyz(0.0, -0.2, -1.0),
     ));
@@ -310,7 +519,7 @@ fn spawn_room_architecture(
     // Recessed dark T-bar Ceiling
     commands.spawn((
         ScenarioEntity,
-        Mesh3d(meshes.add(Cuboid::new(12.0, 0.24, 12.0))),
+        Mesh3d(cache.cuboid(meshes, 12.0, 0.24, 12.0)),
         MeshMaterial3d(ceiling_mat),
         Transform::from_xyz(0.0, 4.25, -1.0),
     ));
@@ -322,13 +531,13 @@ fn spawn_room_architecture(
         Restitution::new(0.50),
         Friction::new(0.28),
         Collider::cuboid(12.0, 4.5, 0.4),
-        Mesh3d(meshes.add(Cuboid::new(12.0, 4.5, 0.4))),
+        Mesh3d(cache.cuboid(meshes, 12.0, 4.5, 0.4)),
         MeshMaterial3d(wall_mat.clone()),
         Transform::from_xyz(0.0, 2.20, -6.4),
     ));
     commands.spawn((
         ScenarioEntity,
-        Mesh3d(meshes.add(Cuboid::new(12.0, 0.20, 0.07))),
+        Mesh3d(cache.cuboid(meshes, 12.0, 0.20, 0.07)),
         MeshMaterial3d(trim_mat.clone()),
         Transform::from_xyz(0.0, 0.10, -6.17),
     ));
@@ -341,14 +550,14 @@ fn spawn_room_architecture(
             Restitution::new(0.50),
             Friction::new(0.28),
             Collider::cuboid(0.4, 4.5, 12.0),
-            Mesh3d(meshes.add(Cuboid::new(0.4, 4.5, 12.0))),
+            Mesh3d(cache.cuboid(meshes, 0.4, 4.5, 12.0)),
             MeshMaterial3d(wall_mat.clone()),
             Transform::from_xyz(x, 2.20, -1.0),
         ));
         let inner_x = if x < 0.0 { x + 0.22 } else { x - 0.22 };
         commands.spawn((
             ScenarioEntity,
-            Mesh3d(meshes.add(Cuboid::new(0.07, 0.20, 12.0))),
+            Mesh3d(cache.cuboid(meshes, 0.07, 0.20, 12.0)),
             MeshMaterial3d(trim_mat.clone()),
             Transform::from_xyz(inner_x, 0.10, -1.0),
         ));
@@ -356,11 +565,14 @@ fn spawn_room_architecture(
 
     // Back-right Structural Pillar + Round Analog Wall Clock (`loading-desk.jpg`!)
     if theme.has_pillar_clock {
-        let pillar_mat = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.14, 0.18, 0.25),
-            perceptual_roughness: 0.88,
-            ..default()
-        });
+        let pillar_mat = cache.material(
+            materials,
+            StandardMaterial {
+                base_color: Color::srgb(0.14, 0.18, 0.25),
+                perceptual_roughness: 0.88,
+                ..default()
+            },
+        );
         commands
             .spawn((
                 ScenarioEntity,
@@ -373,20 +585,24 @@ fn spawn_room_architecture(
                 spawn_outlined_box(
                     pil,
                     meshes,
+                    cache,
                     shared,
                     Vec3::new(0.85, 4.3, 0.55),
                     pillar_mat,
                     Transform::IDENTITY,
                     0.016,
                 );
-                let clock_mat = materials.add(StandardMaterial {
-                    base_color_texture: Some(textures.clock_face.clone()),
-                    alpha_mode: AlphaMode::Mask(0.5),
-                    perceptual_roughness: 0.6,
-                    ..default()
-                });
+                let clock_mat = cache.material(
+                    materials,
+                    StandardMaterial {
+                        base_color_texture: Some(textures.clock_face.clone()),
+                        alpha_mode: AlphaMode::Mask(0.5),
+                        perceptual_roughness: 0.6,
+                        ..default()
+                    },
+                );
                 pil.spawn((
-                    Mesh3d(meshes.add(make_upright_quad_mesh(0.48, 0.48))),
+                    Mesh3d(cache.upright_quad(meshes, 0.48, 0.48)),
                     MeshMaterial3d(clock_mat),
                     Transform::from_xyz(0.0, 0.92, 0.29),
                 ));
@@ -395,46 +611,55 @@ fn spawn_room_architecture(
 
     // Back Window treatment + Volumetric Sunbeam Shafts + Slatted Floor Reflections
     let beam_rgba = theme.sunbeam_color;
-    let sunbeam_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(beam_rgba[0], beam_rgba[1], beam_rgba[2], beam_rgba[3]),
-        emissive: LinearRgba::rgb(
-            beam_rgba[0] * 0.45,
-            beam_rgba[1] * 0.35,
-            beam_rgba[2] * 0.18,
-        ),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        cull_mode: None,
-        ..default()
-    });
-    let floor_slat_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(beam_rgba[0], beam_rgba[1], beam_rgba[2], 0.34),
-        emissive: LinearRgba::rgb(
-            beam_rgba[0] * 0.42,
-            beam_rgba[1] * 0.30,
-            beam_rgba[2] * 0.12,
-        ),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
-    });
+    let sunbeam_mat = cache.material(
+        materials,
+        StandardMaterial {
+            base_color: Color::srgba(beam_rgba[0], beam_rgba[1], beam_rgba[2], beam_rgba[3]),
+            emissive: LinearRgba::rgb(
+                beam_rgba[0] * 0.45,
+                beam_rgba[1] * 0.35,
+                beam_rgba[2] * 0.18,
+            ),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            cull_mode: None,
+            ..default()
+        },
+    );
+    let floor_slat_mat = cache.material(
+        materials,
+        StandardMaterial {
+            base_color: Color::srgba(beam_rgba[0], beam_rgba[1], beam_rgba[2], 0.34),
+            emissive: LinearRgba::rgb(
+                beam_rgba[0] * 0.42,
+                beam_rgba[1] * 0.30,
+                beam_rgba[2] * 0.12,
+            ),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            ..default()
+        },
+    );
 
     match theme.window_style.as_str() {
         "city_sunset_glass" => {
-            let sky_mat = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.city_skyline.clone()),
-                emissive: LinearRgba::rgb(0.45, 0.32, 0.25),
-                emissive_texture: Some(textures.city_skyline.clone()),
-                unlit: true,
-                ..default()
-            });
+            let sky_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.city_skyline.clone()),
+                    emissive: LinearRgba::rgb(0.45, 0.32, 0.25),
+                    emissive_texture: Some(textures.city_skyline.clone()),
+                    unlit: true,
+                    ..default()
+                },
+            );
             commands.spawn((
                 ScenarioEntity,
-                Mesh3d(meshes.add(make_upright_quad_mesh(4.6, 2.35))),
+                Mesh3d(cache.upright_quad(meshes, 4.6, 2.35)),
                 MeshMaterial3d(sky_mat),
                 Transform::from_xyz(-0.35, 2.35, -6.16),
             ));
-            let mullion = meshes.add(Cuboid::new(0.07, 2.4, 0.08));
+            let mullion = cache.cuboid(meshes, 0.07, 2.4, 0.08);
             for mx in [-2.65, -1.12, 0.42, 1.95] {
                 commands.spawn((
                     ScenarioEntity,
@@ -445,74 +670,86 @@ fn spawn_room_architecture(
             }
         }
         "site_daylight" => {
-            let sky_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.66, 0.86, 0.98),
-                emissive: LinearRgba::rgb(0.55, 0.75, 0.92),
-                unlit: true,
-                ..default()
-            });
+            let sky_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.66, 0.86, 0.98),
+                    emissive: LinearRgba::rgb(0.55, 0.75, 0.92),
+                    unlit: true,
+                    ..default()
+                },
+            );
             commands.spawn((
                 ScenarioEntity,
-                Mesh3d(meshes.add(make_upright_quad_mesh(3.4, 1.65))),
+                Mesh3d(cache.upright_quad(meshes, 3.4, 1.65)),
                 MeshMaterial3d(sky_mat),
                 Transform::from_xyz(0.0, 2.35, -6.16),
             ));
             // Exterior scaffolding bars visible through trailer window
-            let bar_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.24, 0.28, 0.34),
-                ..default()
-            });
+            let bar_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.24, 0.28, 0.34),
+                    ..default()
+                },
+            );
             commands.spawn((
                 ScenarioEntity,
-                Mesh3d(meshes.add(Cuboid::new(3.5, 0.06, 0.06))),
+                Mesh3d(cache.cuboid(meshes, 3.5, 0.06, 0.06)),
                 MeshMaterial3d(bar_mat.clone()),
                 Transform::from_xyz(0.0, 2.15, -6.13),
             ));
             commands.spawn((
                 ScenarioEntity,
-                Mesh3d(meshes.add(Cuboid::new(3.6, 0.05, 0.05))),
+                Mesh3d(cache.cuboid(meshes, 3.6, 0.05, 0.05)),
                 MeshMaterial3d(bar_mat),
                 Transform::from_xyz(0.0, 2.35, -6.13).with_rotation(Quat::from_rotation_z(0.38)),
             ));
         }
         "townhall_led_wall" => {
             // Giant All-Hands Stage Backdrop Banner + Studio Rigging Truss + Spotlight Cones!
-            let slide_mat = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.townhall_slide.clone()),
-                emissive: LinearRgba::rgb(0.65, 0.42, 0.85),
-                emissive_texture: Some(textures.townhall_slide.clone()),
-                unlit: true,
-                ..default()
-            });
-            let truss_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.22, 0.24, 0.30),
-                metallic: 0.7,
-                perceptual_roughness: 0.38,
-                ..default()
-            });
+            let slide_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.townhall_slide.clone()),
+                    emissive: LinearRgba::rgb(0.65, 0.42, 0.85),
+                    emissive_texture: Some(textures.townhall_slide.clone()),
+                    unlit: true,
+                    ..default()
+                },
+            );
+            let truss_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.22, 0.24, 0.30),
+                    metallic: 0.7,
+                    perceptual_roughness: 0.38,
+                    ..default()
+                },
+            );
             commands.spawn((
                 ScenarioEntity,
-                Mesh3d(meshes.add(make_upright_quad_mesh(4.8, 2.55))),
+                Mesh3d(cache.upright_quad(meshes, 4.8, 2.55)),
                 MeshMaterial3d(slide_mat),
                 Transform::from_xyz(0.0, 2.38, -6.15),
             ));
             // Overhead lighting truss beam + vertical stage towers
             commands.spawn((
                 ScenarioEntity,
-                Mesh3d(meshes.add(Cuboid::new(7.4, 0.18, 0.18))),
+                Mesh3d(cache.cuboid(meshes, 7.4, 0.18, 0.18)),
                 MeshMaterial3d(truss_mat.clone()),
                 Transform::from_xyz(0.0, 3.82, -5.85),
             ));
             for tx in [-3.55_f32, 3.55_f32] {
                 commands.spawn((
                     ScenarioEntity,
-                    Mesh3d(meshes.add(Cuboid::new(0.16, 3.85, 0.16))),
+                    Mesh3d(cache.cuboid(meshes, 0.16, 3.85, 0.16)),
                     MeshMaterial3d(truss_mat.clone()),
                     Transform::from_xyz(tx, 1.92, -5.85),
                 ));
                 commands.spawn((
                     ScenarioEntity,
-                    Mesh3d(meshes.add(Cuboid::new(1.5, 2.8, 0.02))),
+                    Mesh3d(cache.cuboid(meshes, 1.5, 2.8, 0.02)),
                     MeshMaterial3d(sunbeam_mat.clone()),
                     Transform::from_xyz(tx * 0.55, 2.25, -5.15)
                         .with_rotation(Quat::from_euler(EulerRot::XYZ, 0.36, tx.signum() * -0.22, 0.0)),
@@ -521,105 +758,126 @@ fn spawn_room_architecture(
         }
         "breakroom_transom" => {
             // High Frosted Clerestory Transom Windows + Passive-Aggressive Laminated Fridge Rules!
-            let transom_glow = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.86, 0.94, 0.90),
-                emissive: LinearRgba::rgb(0.62, 0.72, 0.65),
-                unlit: true,
-                ..default()
-            });
-            let frame_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.32, 0.38, 0.36),
-                ..default()
-            });
+            let transom_glow = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.86, 0.94, 0.90),
+                    emissive: LinearRgba::rgb(0.62, 0.72, 0.65),
+                    unlit: true,
+                    ..default()
+                },
+            );
+            let frame_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.32, 0.38, 0.36),
+                    ..default()
+                },
+            );
             for wx in [-2.0_f32, 0.65_f32] {
                 commands.spawn((
                     ScenarioEntity,
-                    Mesh3d(meshes.add(make_upright_quad_mesh(2.1, 0.72))),
+                    Mesh3d(cache.upright_quad(meshes, 2.1, 0.72)),
                     MeshMaterial3d(transom_glow.clone()),
                     Transform::from_xyz(wx, 3.35, -6.16),
                 ));
                 commands.spawn((
                     ScenarioEntity,
-                    Mesh3d(meshes.add(Cuboid::new(2.18, 0.06, 0.08))),
+                    Mesh3d(cache.cuboid(meshes, 2.18, 0.06, 0.08)),
                     MeshMaterial3d(frame_mat.clone()),
                     Transform::from_xyz(wx, 2.98, -6.13),
                 ));
             }
             // Big "HANG IN THERE" & laminated "CLEAN YOUR OWN MUG!" breakroom signs
-            let poster_mat = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.cat_poster.clone()),
-                perceptual_roughness: 0.55,
-                ..default()
-            });
+            let poster_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.cat_poster.clone()),
+                    perceptual_roughness: 0.55,
+                    ..default()
+                },
+            );
             commands.spawn((
                 ScenarioEntity,
-                Mesh3d(meshes.add(make_upright_quad_mesh(0.95, 1.25))),
+                Mesh3d(cache.upright_quad(meshes, 0.95, 1.25)),
                 MeshMaterial3d(poster_mat),
                 Transform::from_xyz(1.35, 2.05, -6.15),
             ));
         }
         "warehouse_safety_board" => {
             // Steel Roll-Up Loading Dock Door + Giant "0 DAYS SINCE INJURY // QUOTA" LED Board!
-            let shutter_mat = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.corrugated_wall.clone()),
-                base_color: Color::srgb(0.62, 0.66, 0.72),
-                uv_transform: Affine2::from_scale(Vec2::new(3.0, 5.0)),
-                metallic: 0.45,
-                perceptual_roughness: 0.55,
-                ..default()
-            });
-            let board_mat = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.injury_board.clone()),
-                emissive: LinearRgba::rgb(0.85, 0.45, 0.22),
-                emissive_texture: Some(textures.injury_board.clone()),
-                unlit: true,
-                ..default()
-            });
+            let shutter_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.corrugated_wall.clone()),
+                    base_color: Color::srgb(0.62, 0.66, 0.72),
+                    uv_transform: Affine2::from_scale(Vec2::new(3.0, 5.0)),
+                    metallic: 0.45,
+                    perceptual_roughness: 0.55,
+                    ..default()
+                },
+            );
+            let board_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.injury_board.clone()),
+                    emissive: LinearRgba::rgb(0.85, 0.45, 0.22),
+                    emissive_texture: Some(textures.injury_board.clone()),
+                    unlit: true,
+                    ..default()
+                },
+            );
             // Roll-up bay shutter on back-left
             commands.spawn((
                 ScenarioEntity,
-                Mesh3d(meshes.add(Cuboid::new(3.1, 3.1, 0.08))),
+                Mesh3d(cache.cuboid(meshes, 3.1, 3.1, 0.08)),
                 MeshMaterial3d(shutter_mat),
                 Transform::from_xyz(-2.35, 1.55, -6.15),
             ));
             // Glowing Safety & Pick-Rate Scoreboard center-right
             commands.spawn((
                 ScenarioEntity,
-                Mesh3d(meshes.add(make_upright_quad_mesh(2.85, 1.55))),
+                Mesh3d(cache.upright_quad(meshes, 2.85, 1.55)),
                 MeshMaterial3d(board_mat),
                 Transform::from_xyz(1.15, 2.55, -6.15),
             ));
         }
         _ => {
             // Iconic Warm Golden Venetian-Blind Window (`loading-desk.jpg`!)
-            let blind_glow = materials.add(StandardMaterial {
-                base_color: Color::srgb(1.0, 0.84, 0.48),
-                emissive: LinearRgba::rgb(1.35, 0.92, 0.36),
-                unlit: true,
-                ..default()
-            });
-            let slat_dark = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.56, 0.36, 0.18),
-                perceptual_roughness: 0.7,
-                ..default()
-            });
+            let blind_glow = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(1.0, 0.84, 0.48),
+                    emissive: LinearRgba::rgb(1.35, 0.92, 0.36),
+                    unlit: true,
+                    ..default()
+                },
+            );
+            let slat_dark = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.56, 0.36, 0.18),
+                    perceptual_roughness: 0.7,
+                    ..default()
+                },
+            );
 
             // Back Venetian window (center-right of back wall, matching loading-desk.jpg!)
             let win_x = 0.85;
             commands.spawn((
                 ScenarioEntity,
-                Mesh3d(meshes.add(make_upright_quad_mesh(2.65, 1.85))),
+                Mesh3d(cache.upright_quad(meshes, 2.65, 1.85)),
                 MeshMaterial3d(blind_glow.clone()),
                 Transform::from_xyz(win_x, 2.32, -6.16),
             ));
             // Valance header
             commands.spawn((
                 ScenarioEntity,
-                Mesh3d(meshes.add(Cuboid::new(2.80, 0.12, 0.12))),
+                Mesh3d(cache.cuboid(meshes, 2.80, 0.12, 0.12)),
                 MeshMaterial3d(slat_dark.clone()),
                 Transform::from_xyz(win_x, 3.28, -6.12),
             ));
-            let back_slat = meshes.add(Cuboid::new(2.66, 0.036, 0.06));
+            let back_slat = cache.cuboid(meshes, 2.66, 0.036, 0.06);
             for i in 0..12 {
                 let sy = 1.46 + i as f32 * 0.15;
                 commands.spawn((
@@ -632,7 +890,7 @@ fn spawn_room_architecture(
             // Diagonal golden sunbeam wedge slanting down from back window
             commands.spawn((
                 ScenarioEntity,
-                Mesh3d(meshes.add(Cuboid::new(2.55, 2.6, 0.02))),
+                Mesh3d(cache.cuboid(meshes, 2.55, 2.6, 0.02)),
                 MeshMaterial3d(sunbeam_mat.clone()),
                 Transform::from_xyz(win_x + 0.25, 1.55, -5.25)
                     .with_rotation(Quat::from_euler(EulerRot::XYZ, 0.48, -0.14, 0.0)),
@@ -642,11 +900,11 @@ fn spawn_room_architecture(
             let r_win_x = 4.35;
             commands.spawn((
                 ScenarioEntity,
-                Mesh3d(meshes.add(make_upright_quad_mesh(1.55, 1.65))),
+                Mesh3d(cache.upright_quad(meshes, 1.55, 1.65)),
                 MeshMaterial3d(blind_glow.clone()),
                 Transform::from_xyz(r_win_x, 2.35, -6.16),
             ));
-            let r_slat = meshes.add(Cuboid::new(1.56, 0.036, 0.06));
+            let r_slat = cache.cuboid(meshes, 1.56, 0.036, 0.06);
             for i in 0..10 {
                 let sy = 1.58 + i as f32 * 0.15;
                 commands.spawn((
@@ -658,7 +916,7 @@ fn spawn_room_architecture(
             }
 
             // Crisp slatted golden Venetian-blind stripes across the dark carpet!
-            let stripe_mesh = meshes.add(make_floor_quad_mesh(2.1, 0.11));
+            let stripe_mesh = cache.floor_quad(meshes, 2.1, 0.11);
             for i in 0..7 {
                 commands.spawn((
                     ScenarioEntity,
@@ -672,11 +930,11 @@ fn spawn_room_architecture(
             if theme.has_left_blind_window {
                 commands.spawn((
                     ScenarioEntity,
-                    Mesh3d(meshes.add(Cuboid::new(0.04, 1.75, 2.75))),
+                    Mesh3d(cache.cuboid(meshes, 0.04, 1.75, 2.75)),
                     MeshMaterial3d(blind_glow),
                     Transform::from_xyz(-5.16, 2.48, -1.65),
                 ));
-                let left_slat = meshes.add(Cuboid::new(0.07, 0.036, 2.76));
+                let left_slat = cache.cuboid(meshes, 0.07, 0.036, 2.76);
                 for i in 0..11 {
                     let sy = 1.68 + i as f32 * 0.15;
                     commands.spawn((
@@ -689,7 +947,7 @@ fn spawn_room_architecture(
                 // Angled golden sunbeam streaming in from left blinds!
                 commands.spawn((
                     ScenarioEntity,
-                    Mesh3d(meshes.add(Cuboid::new(2.8, 0.02, 2.45))),
+                    Mesh3d(cache.cuboid(meshes, 2.8, 0.02, 2.45)),
                     MeshMaterial3d(sunbeam_mat),
                     Transform::from_xyz(-3.85, 1.85, -1.55)
                         .with_rotation(Quat::from_rotation_z(-0.52)),
@@ -699,29 +957,41 @@ fn spawn_room_architecture(
     }
 
     // ── Side-Wall Architectural Details (Door, EXIT Sign, Corkboards, AC Vents) ──
-    let door_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.38, 0.23, 0.14),
-        perceptual_roughness: 0.68,
-        ..default()
-    });
-    let door_glass = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.62, 0.82, 0.92, 0.55),
-        emissive: LinearRgba::rgb(0.12, 0.20, 0.26),
-        alpha_mode: AlphaMode::Blend,
-        ..default()
-    });
-    let exit_glow = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.98, 0.22, 0.20),
-        emissive: LinearRgba::rgb(2.4, 0.25, 0.20),
-        unlit: true,
-        ..default()
-    });
-    let brass_knob = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.84, 0.68, 0.28),
-        metallic: 0.75,
-        perceptual_roughness: 0.3,
-        ..default()
-    });
+    let door_mat = cache.material(
+        materials,
+        StandardMaterial {
+            base_color: Color::srgb(0.38, 0.23, 0.14),
+            perceptual_roughness: 0.68,
+            ..default()
+        },
+    );
+    let door_glass = cache.material(
+        materials,
+        StandardMaterial {
+            base_color: Color::srgba(0.62, 0.82, 0.92, 0.55),
+            emissive: LinearRgba::rgb(0.12, 0.20, 0.26),
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        },
+    );
+    let exit_glow = cache.material(
+        materials,
+        StandardMaterial {
+            base_color: Color::srgb(0.98, 0.22, 0.20),
+            emissive: LinearRgba::rgb(2.4, 0.25, 0.20),
+            unlit: true,
+            ..default()
+        },
+    );
+    let brass_knob = cache.material(
+        materials,
+        StandardMaterial {
+            base_color: Color::srgb(0.84, 0.68, 0.28),
+            metallic: 0.75,
+            perceptual_roughness: 0.3,
+            ..default()
+        },
+    );
 
     // Right-wall 3D Office / Trailer Door + Glowing EXIT Sign
     commands
@@ -734,6 +1004,7 @@ fn spawn_room_architecture(
             spawn_outlined_box(
                 dr,
                 meshes,
+                cache,
                 shared,
                 Vec3::new(0.08, 2.24, 1.12),
                 trim_mat.clone(),
@@ -743,6 +1014,7 @@ fn spawn_room_architecture(
             spawn_outlined_box(
                 dr,
                 meshes,
+                cache,
                 shared,
                 Vec3::new(0.06, 2.14, 0.98),
                 door_mat,
@@ -750,12 +1022,12 @@ fn spawn_room_architecture(
                 0.010,
             );
             dr.spawn((
-                Mesh3d(meshes.add(Cuboid::new(0.03, 0.72, 0.56))),
+                Mesh3d(cache.cuboid(meshes, 0.03, 0.72, 0.56)),
                 MeshMaterial3d(door_glass),
                 Transform::from_xyz(-0.05, 0.42, 0.0),
             ));
             dr.spawn((
-                Mesh3d(meshes.add(Cuboid::new(0.06, 0.04, 0.14))),
+                Mesh3d(cache.cuboid(meshes, 0.06, 0.04, 0.14)),
                 MeshMaterial3d(brass_knob),
                 Transform::from_xyz(-0.06, -0.08, 0.36),
             ));
@@ -763,6 +1035,7 @@ fn spawn_room_architecture(
             spawn_outlined_box(
                 dr,
                 meshes,
+                cache,
                 shared,
                 Vec3::new(0.08, 0.20, 0.46),
                 exit_glow,
@@ -772,21 +1045,30 @@ fn spawn_room_architecture(
         });
 
     // Wall-mounted Corkboards & HVAC Vents so left/right/back walls look lived-in
-    let cork_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.66, 0.46, 0.26),
-        perceptual_roughness: 0.88,
-        ..default()
-    });
-    let memos_wall = materials.add(StandardMaterial {
-        base_color_texture: Some(textures.pinned_memos.clone()),
-        alpha_mode: AlphaMode::Mask(0.5),
-        ..default()
-    });
-    let vent_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.32, 0.36, 0.44),
-        metallic: 0.35,
-        ..default()
-    });
+    let cork_mat = cache.material(
+        materials,
+        StandardMaterial {
+            base_color: Color::srgb(0.66, 0.46, 0.26),
+            perceptual_roughness: 0.88,
+            ..default()
+        },
+    );
+    let memos_wall = cache.material(
+        materials,
+        StandardMaterial {
+            base_color_texture: Some(textures.pinned_memos.clone()),
+            alpha_mode: AlphaMode::Mask(0.5),
+            ..default()
+        },
+    );
+    let vent_mat = cache.material(
+        materials,
+        StandardMaterial {
+            base_color: Color::srgb(0.32, 0.36, 0.44),
+            metallic: 0.35,
+            ..default()
+        },
+    );
 
     // Right-wall corkboard with pinned notices
     commands
@@ -800,6 +1082,7 @@ fn spawn_room_architecture(
             spawn_outlined_box(
                 cb,
                 meshes,
+                cache,
                 shared,
                 Vec3::new(1.35, 0.88, 0.05),
                 cork_mat.clone(),
@@ -808,7 +1091,7 @@ fn spawn_room_architecture(
             );
             for mx in [-0.36_f32, 0.28_f32] {
                 cb.spawn((
-                    Mesh3d(meshes.add(make_upright_quad_mesh(0.46, 0.46))),
+                    Mesh3d(cache.upright_quad(meshes, 0.46, 0.46)),
                     MeshMaterial3d(memos_wall.clone()),
                     Transform::from_xyz(mx, 0.05, 0.032),
                 ));
@@ -827,6 +1110,7 @@ fn spawn_room_architecture(
             spawn_outlined_box(
                 cb,
                 meshes,
+                cache,
                 shared,
                 Vec3::new(1.15, 0.78, 0.05),
                 cork_mat,
@@ -834,7 +1118,7 @@ fn spawn_room_architecture(
                 0.010,
             );
             cb.spawn((
-                Mesh3d(meshes.add(make_upright_quad_mesh(0.48, 0.48))),
+                Mesh3d(cache.upright_quad(meshes, 0.48, 0.48)),
                 MeshMaterial3d(memos_wall),
                 Transform::from_xyz(0.0, 0.02, 0.032),
             ));
@@ -843,18 +1127,20 @@ fn spawn_room_architecture(
     for (vx, vz) in [(-3.2_f32, -6.14_f32), (1.8_f32, -6.14_f32)] {
         commands.spawn((
             ScenarioEntity,
-            Mesh3d(meshes.add(Cuboid::new(0.75, 0.26, 0.06))),
+            Mesh3d(cache.cuboid(meshes, 0.75, 0.26, 0.06)),
             MeshMaterial3d(vent_mat.clone()),
             Transform::from_xyz(vx, 3.68, vz),
         ));
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_player_desk(
     desk: &DeskDef,
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    cache: &mut PrefabAssetCache,
     textures: &ProceduralTextures,
     shared: &SharedMeshes,
 ) {
@@ -863,17 +1149,23 @@ fn spawn_player_desk(
 
     match desk.archetype.as_str() {
         "folding_site" => {
-            let top_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.52, 0.56, 0.60),
-                perceptual_roughness: 0.58,
-                ..default()
-            });
-            let steel_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.20, 0.23, 0.28),
-                metallic: 0.5,
-                perceptual_roughness: 0.45,
-                ..default()
-            });
+            let top_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.52, 0.56, 0.60),
+                    perceptual_roughness: 0.58,
+                    ..default()
+                },
+            );
+            let steel_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.20, 0.23, 0.28),
+                    metallic: 0.5,
+                    perceptual_roughness: 0.45,
+                    ..default()
+                },
+            );
 
             commands
                 .spawn((
@@ -893,6 +1185,7 @@ fn spawn_player_desk(
                         spill_papers: false,
                     },
                     RigidBody::Dynamic,
+                    CollisionLayers::from_bits(LAYER_DESK, LAYER_DEFAULT),
                     Mass(desk.mass),
                     Friction::new(0.30),
                     Restitution::new(0.44),
@@ -929,7 +1222,7 @@ fn spawn_player_desk(
                     Visibility::default(),
                 ))
                 .with_children(|d| {
-                    let top_mesh = meshes.add(Cuboid::new(2.1, 0.07, 0.98));
+                    let top_mesh = cache.cuboid(meshes, 2.1, 0.07, 0.98);
                     d.spawn((
                         DeskTopVisual,
                         Mesh3d(top_mesh.clone()),
@@ -952,7 +1245,7 @@ fn spawn_player_desk(
                             mat: steel_mat.clone(),
                             eject_dir: Vec3::new(0.0, 1.4, 1.6),
                         },
-                        Mesh3d(meshes.add(Cuboid::new(1.76, 0.05, 0.05))),
+                        Mesh3d(cache.cuboid(meshes, 1.76, 0.05, 0.05)),
                         MeshMaterial3d(steel_mat.clone()),
                         Transform::from_xyz(0.0, 0.26, 0.38),
                     ));
@@ -971,7 +1264,7 @@ fn spawn_player_desk(
                                 mat: steel_mat.clone(),
                                 eject_dir: Vec3::new(lx.signum() * 2.2, 1.8, lz.signum() * 1.5),
                             },
-                            Mesh3d(meshes.add(Cuboid::new(leg_size.x, leg_size.y, leg_size.z))),
+                            Mesh3d(cache.cuboid(meshes, leg_size.x, leg_size.y, leg_size.z)),
                             MeshMaterial3d(steel_mat.clone()),
                             Transform::from_xyz(lx, -0.02, lz),
                         ));
@@ -1005,28 +1298,37 @@ fn spawn_player_desk(
                 )
             };
 
-            let top_mat = materials.add(StandardMaterial {
-                base_color: top_col,
-                metallic: if is_breakroom { 0.05 } else { 0.42 },
-                perceptual_roughness: if is_breakroom { 0.45 } else { 0.52 },
-                ..default()
-            });
-            let leg_mat = materials.add(StandardMaterial {
-                base_color: leg_col,
-                metallic: 0.55,
-                perceptual_roughness: 0.40,
-                ..default()
-            });
-            let accent_mat = materials.add(StandardMaterial {
-                base_color: accent_col,
-                emissive: if is_townhall {
-                    LinearRgba::rgb(1.3, 0.15, 0.85)
-                } else {
-                    LinearRgba::NONE
+            let top_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: top_col,
+                    metallic: if is_breakroom { 0.05 } else { 0.42 },
+                    perceptual_roughness: if is_breakroom { 0.45 } else { 0.52 },
+                    ..default()
                 },
-                perceptual_roughness: 0.45,
-                ..default()
-            });
+            );
+            let leg_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: leg_col,
+                    metallic: 0.55,
+                    perceptual_roughness: 0.40,
+                    ..default()
+                },
+            );
+            let accent_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: accent_col,
+                    emissive: if is_townhall {
+                        LinearRgba::rgb(1.3, 0.15, 0.85)
+                    } else {
+                        LinearRgba::NONE
+                    },
+                    perceptual_roughness: 0.45,
+                    ..default()
+                },
+            );
 
             commands
                 .spawn((
@@ -1046,6 +1348,7 @@ fn spawn_player_desk(
                         spill_papers: spill,
                     },
                     RigidBody::Dynamic,
+                    CollisionLayers::from_bits(LAYER_DESK, LAYER_DEFAULT),
                     Mass(desk.mass),
                     Friction::new(0.32),
                     Restitution::new(0.42),
@@ -1082,7 +1385,7 @@ fn spawn_player_desk(
                     Visibility::default(),
                 ))
                 .with_children(|d| {
-                    let top_mesh = meshes.add(Cuboid::new(2.16, 0.075, 1.00));
+                    let top_mesh = cache.cuboid(meshes, 2.16, 0.075, 1.00);
                     d.spawn((
                         DeskTopVisual,
                         Mesh3d(top_mesh.clone()),
@@ -1107,7 +1410,7 @@ fn spawn_player_desk(
                             mat: accent_mat.clone(),
                             eject_dir: Vec3::new(0.0, 1.8, -2.2),
                         },
-                        Mesh3d(meshes.add(Cuboid::new(1.88, panel_h, 0.05))),
+                        Mesh3d(cache.cuboid(meshes, 1.88, panel_h, 0.05)),
                         MeshMaterial3d(accent_mat),
                         Transform::from_xyz(0.0, panel_y, -0.44),
                     ));
@@ -1126,7 +1429,7 @@ fn spawn_player_desk(
                                 mat: leg_mat.clone(),
                                 eject_dir: Vec3::new(lx.signum() * 2.3, 1.9, lz.signum() * 1.6),
                             },
-                            Mesh3d(meshes.add(Cuboid::new(leg_size.x, leg_size.y, leg_size.z))),
+                            Mesh3d(cache.cuboid(meshes, leg_size.x, leg_size.y, leg_size.z)),
                             MeshMaterial3d(leg_mat.clone()),
                             Transform::from_xyz(lx, -0.02, lz),
                         ));
@@ -1136,22 +1439,28 @@ fn spawn_player_desk(
         _ => {
             // Rich Walnut Executive / Cubicle Pedestal Desk (`loading-desk.jpg`!)
             let is_boardroom = desk.archetype == "mahogany_boardroom";
-            let wood_mat = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.walnut_desk.clone()),
-                base_color: if is_boardroom {
-                    Color::srgb(0.86, 0.64, 0.56)
-                } else {
-                    Color::WHITE
+            let wood_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.walnut_desk.clone()),
+                    base_color: if is_boardroom {
+                        Color::srgb(0.86, 0.64, 0.56)
+                    } else {
+                        Color::WHITE
+                    },
+                    uv_transform: Affine2::from_scale(Vec2::new(3.0, 1.5)),
+                    perceptual_roughness: if is_boardroom { 0.42 } else { 0.64 },
+                    ..default()
                 },
-                uv_transform: Affine2::from_scale(Vec2::new(3.0, 1.5)),
-                perceptual_roughness: if is_boardroom { 0.42 } else { 0.64 },
-                ..default()
-            });
-            let dark_wood = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.24, 0.13, 0.07),
-                perceptual_roughness: 0.72,
-                ..default()
-            });
+            );
+            let dark_wood = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.24, 0.13, 0.07),
+                    perceptual_roughness: 0.72,
+                    ..default()
+                },
+            );
 
             commands
                 .spawn((
@@ -1171,6 +1480,7 @@ fn spawn_player_desk(
                         spill_papers: true,
                     },
                     RigidBody::Dynamic,
+                    CollisionLayers::from_bits(LAYER_DESK, LAYER_DEFAULT),
                     Mass(desk.mass),
                     Friction::new(0.34),
                     Restitution::new(0.40),
@@ -1198,7 +1508,7 @@ fn spawn_player_desk(
                 ))
                 .with_children(|d| {
                     // Thick beveled tabletop (splits in two at Stage 3!)
-                    let top_mesh = meshes.add(Cuboid::new(2.24, 0.08, 1.04));
+                    let top_mesh = cache.cuboid(meshes, 2.24, 0.08, 1.04);
                     d.spawn((
                         DeskTopVisual,
                         Mesh3d(top_mesh.clone()),
@@ -1221,14 +1531,14 @@ fn spawn_player_desk(
                             mat: dark_wood.clone(),
                             eject_dir: Vec3::new(0.0, 1.8, 2.2),
                         },
-                        Mesh3d(meshes.add(Cuboid::new(2.26, 0.035, 0.04))),
+                        Mesh3d(cache.cuboid(meshes, 2.26, 0.035, 0.04)),
                         MeshMaterial3d(dark_wood.clone()),
                         Transform::from_xyz(0.0, 0.315, 0.51),
                     ));
                     // Left & Right Drawer Pedestals (drawers rip out at Stage 1, pedestals snap off at Stage 2!)
                     for px in [-0.78_f32, 0.78_f32] {
                         let ped_size = Vec3::new(0.50, 0.68, 0.90);
-                        let ped_mesh = meshes.add(Cuboid::new(ped_size.x, ped_size.y, ped_size.z));
+                        let ped_mesh = cache.cuboid(meshes, ped_size.x, ped_size.y, ped_size.z);
                         d.spawn((
                             DeskBreakoffPart {
                                 trigger_stage: 2,
@@ -1257,7 +1567,7 @@ fn spawn_player_desk(
                                 mat: dark_wood.clone(),
                                 eject_dir: Vec3::new(px.signum() * 1.6, 2.2, 2.6),
                             },
-                            Mesh3d(meshes.add(Cuboid::new(0.40, 0.22, 0.03))),
+                            Mesh3d(cache.cuboid(meshes, 0.40, 0.22, 0.03)),
                             MeshMaterial3d(dark_wood.clone()),
                             Transform::from_xyz(px, 0.14, 0.45),
                         ));
@@ -1267,11 +1577,13 @@ fn spawn_player_desk(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_prop_prefab(
     p: &PropPlacement,
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
+    cache: &mut PrefabAssetCache,
     textures: &ProceduralTextures,
     shared: &SharedMeshes,
     joke_rng: &mut CorporateJokeRng,
@@ -1285,28 +1597,40 @@ fn spawn_prop_prefab(
 
     match p.prefab {
         PropPrefab::CrtMonitor => {
-            let beige = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.84, 0.79, 0.67),
-                perceptual_roughness: 0.66,
-                ..default()
-            });
-            let bezel_dark = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.16, 0.18, 0.22),
-                perceptual_roughness: 0.75,
-                ..default()
-            });
-            let screen_mat = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.crt_phosphor.clone()),
-                emissive: LinearRgba::rgb(0.28, 1.05, 0.96),
-                emissive_texture: Some(textures.crt_phosphor.clone()),
-                perceptual_roughness: 0.18,
-                ..default()
-            });
-            let led_green = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.25, 0.98, 0.45),
-                emissive: LinearRgba::rgb(0.4, 2.2, 0.6),
-                ..default()
-            });
+            let beige = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.84, 0.79, 0.67),
+                    perceptual_roughness: 0.66,
+                    ..default()
+                },
+            );
+            let bezel_dark = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.16, 0.18, 0.22),
+                    perceptual_roughness: 0.75,
+                    ..default()
+                },
+            );
+            let screen_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.crt_phosphor.clone()),
+                    emissive: LinearRgba::rgb(0.28, 1.05, 0.96),
+                    emissive_texture: Some(textures.crt_phosphor.clone()),
+                    perceptual_roughness: 0.18,
+                    ..default()
+                },
+            );
+            let led_green = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.25, 0.98, 0.45),
+                    emissive: LinearRgba::rgb(0.4, 2.2, 0.6),
+                    ..default()
+                },
+            );
 
             let prop = DestructibleProp::small(
                 lbl("CRT MONITOR"),
@@ -1336,6 +1660,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         crt,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.34, 0.045, 0.28),
                         beige.clone(),
@@ -1345,6 +1670,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         crt,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.18, 0.05, 0.18),
                         bezel_dark.clone(),
@@ -1355,6 +1681,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         crt,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.48, 0.39, 0.22),
                         beige.clone(),
@@ -1362,11 +1689,12 @@ fn spawn_prop_prefab(
                         0.013,
                     );
                     // Tapered rear CRT electron-gun shell (`make_frustum_z_mesh`!)
-                    let rear_mesh = meshes.add(make_frustum_z_mesh(
+                    let rear_mesh = cache.frustum_z(
+                        meshes,
                         Vec2::new(0.42, 0.33),
                         Vec2::new(0.26, 0.22),
                         0.22,
-                    ));
+                    );
                     crt.spawn((
                         Mesh3d(rear_mesh.clone()),
                         MeshMaterial3d(beige),
@@ -1379,20 +1707,20 @@ fn spawn_prop_prefab(
                     ));
                     // Dark recessed inner screen frame
                     crt.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.40, 0.30, 0.02))),
+                        Mesh3d(cache.cuboid(meshes, 0.40, 0.30, 0.02)),
                         MeshMaterial3d(bezel_dark),
                         Transform::from_xyz(0.0, 0.04, 0.186),
                     ));
                     // Upright glowing phosphor screen (swaps to cracked static on damage!)
                     crt.spawn((
                         ScreenSurface,
-                        Mesh3d(meshes.add(make_upright_quad_mesh(0.37, 0.27))),
+                        Mesh3d(cache.upright_quad(meshes, 0.37, 0.27)),
                         MeshMaterial3d(screen_mat),
                         Transform::from_xyz(0.0, 0.04, 0.202),
                     ));
                     // Green power LED bottom-right
                     crt.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.025, 0.014, 0.015))),
+                        Mesh3d(cache.cuboid(meshes, 0.025, 0.014, 0.015)),
                         MeshMaterial3d(led_green),
                         Transform::from_xyz(0.16, -0.13, 0.195),
                     ));
@@ -1400,16 +1728,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::MechanicalKeyboard => {
-            let chassis_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.82, 0.77, 0.65),
-                perceptual_roughness: 0.68,
-                ..default()
-            });
-            let top_mat = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.keyboard_top.clone()),
-                perceptual_roughness: 0.62,
-                ..default()
-            });
+            let chassis_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.82, 0.77, 0.65),
+                    perceptual_roughness: 0.68,
+                    ..default()
+                },
+            );
+            let top_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.keyboard_top.clone()),
+                    perceptual_roughness: 0.62,
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -1436,6 +1770,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         kb,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.56, 0.036, 0.21),
                         chassis_mat,
@@ -1443,7 +1778,7 @@ fn spawn_prop_prefab(
                         0.011,
                     );
                     kb.spawn((
-                        Mesh3d(meshes.add(make_floor_quad_mesh(0.53, 0.185))),
+                        Mesh3d(cache.floor_quad(meshes, 0.53, 0.185)),
                         MeshMaterial3d(top_mat),
                         Transform::from_xyz(0.0, 0.021, 0.0)
                             .with_rotation(Quat::from_rotation_x(0.08)),
@@ -1452,21 +1787,30 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::RedStapler => {
-            let red = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.84, 0.14, 0.15),
-                perceptual_roughness: 0.38,
-                ..default()
-            });
-            let chrome = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.76, 0.80, 0.84),
-                metallic: 0.7,
-                perceptual_roughness: 0.3,
-                ..default()
-            });
-            let dark_base = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.12, 0.13, 0.16),
-                ..default()
-            });
+            let red = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.84, 0.14, 0.15),
+                    perceptual_roughness: 0.38,
+                    ..default()
+                },
+            );
+            let chrome = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.76, 0.80, 0.84),
+                    metallic: 0.7,
+                    perceptual_roughness: 0.3,
+                    ..default()
+                },
+            );
+            let dark_base = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.12, 0.13, 0.16),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -1492,6 +1836,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         st,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.17, 0.018, 0.062),
                         dark_base,
@@ -1499,13 +1844,14 @@ fn spawn_prop_prefab(
                         0.008,
                     );
                     st.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.14, 0.010, 0.045))),
+                        Mesh3d(cache.cuboid(meshes, 0.14, 0.010, 0.045)),
                         MeshMaterial3d(chrome),
                         Transform::from_xyz(0.01, -0.006, 0.0),
                     ));
                     spawn_outlined_box(
                         st,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.165, 0.032, 0.058),
                         red,
@@ -1517,16 +1863,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::SteamingCoffeeMug => {
-            let ceramic = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.92, 0.91, 0.88),
-                perceptual_roughness: 0.32,
-                ..default()
-            });
-            let coffee = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.20, 0.10, 0.05),
-                perceptual_roughness: 0.15,
-                ..default()
-            });
+            let ceramic = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.92, 0.91, 0.88),
+                    perceptual_roughness: 0.32,
+                    ..default()
+                },
+            );
+            let coffee = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.20, 0.10, 0.05),
+                    perceptual_roughness: 0.15,
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::small(
                 lbl("HOT COFFEE!"),
                 pts(180),
@@ -1541,7 +1893,7 @@ fn spawn_prop_prefab(
             prop.damage_impulse = 0.95;
             prop.break_impulse = 1.85;
 
-            let body_mesh = meshes.add(Cylinder::new(0.058, 0.125));
+            let body_mesh = cache.cylinder(meshes, 0.058, 0.125);
             commands
                 .spawn((
                     ScenarioEntity,
@@ -1570,7 +1922,7 @@ fn spawn_prop_prefab(
                         Transform::from_scale(Vec3::new(1.14, 1.09, 1.14)),
                     ));
                     mug.spawn((
-                        Mesh3d(meshes.add(Cylinder::new(0.048, 0.014))),
+                        Mesh3d(cache.cylinder(meshes, 0.048, 0.014)),
                         MeshMaterial3d(coffee),
                         Transform::from_xyz(0.0, 0.058, 0.0),
                     ));
@@ -1584,6 +1936,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             mug,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(sx, sy, 0.020 + hz),
                             ceramic.clone(),
@@ -1595,16 +1948,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::PaperStackTall | PropPrefab::PaperStackMessy | PropPrefab::LoosePaperFan => {
-            let page_top = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.printed_page.clone()),
-                perceptual_roughness: 0.88,
-                ..default()
-            });
-            let edge_white = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.90, 0.92, 0.95),
-                perceptual_roughness: 0.9,
-                ..default()
-            });
+            let page_top = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.printed_page.clone()),
+                    perceptual_roughness: 0.88,
+                    ..default()
+                },
+            );
+            let edge_white = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.90, 0.92, 0.95),
+                    perceptual_roughness: 0.9,
+                    ..default()
+                },
+            );
 
             let (layers, total_h, default_pts, default_lbl) = match p.prefab {
                 PropPrefab::PaperStackTall => (5, 0.16, 160, "AUDIT STACK!"),
@@ -1649,6 +2008,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             st,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(0.24, (slice_h * 0.88).max(0.012), 0.30),
                             edge_white.clone(),
@@ -1659,7 +2019,7 @@ fn spawn_prop_prefab(
                             let mut top_tf = sub_tf;
                             top_tf.translation.y += slice_h * 0.46 + 0.002;
                             st.spawn((
-                                Mesh3d(meshes.add(make_floor_quad_mesh(0.23, 0.29))),
+                                Mesh3d(cache.floor_quad(meshes, 0.23, 0.29)),
                                 MeshMaterial3d(page_top.clone()),
                                 top_tf,
                             ));
@@ -1669,29 +2029,41 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::CubicleWallPinned | PropPrefab::CubicleWallPoster => {
-            let fabric = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.cubicle_fabric.clone()),
-                uv_transform: Affine2::from_scale(Vec2::new(4.0, 3.0)),
-                perceptual_roughness: 0.92,
-                ..default()
-            });
-            let alum_trim = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.46, 0.52, 0.60),
-                metallic: 0.35,
-                perceptual_roughness: 0.55,
-                ..default()
-            });
-            let memos_mat = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.pinned_memos.clone()),
-                alpha_mode: AlphaMode::Mask(0.5),
-                perceptual_roughness: 0.85,
-                ..default()
-            });
-            let cat_mat = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.cat_poster.clone()),
-                perceptual_roughness: 0.65,
-                ..default()
-            });
+            let fabric = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.cubicle_fabric.clone()),
+                    uv_transform: Affine2::from_scale(Vec2::new(4.0, 3.0)),
+                    perceptual_roughness: 0.92,
+                    ..default()
+                },
+            );
+            let alum_trim = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.46, 0.52, 0.60),
+                    metallic: 0.35,
+                    perceptual_roughness: 0.55,
+                    ..default()
+                },
+            );
+            let memos_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.pinned_memos.clone()),
+                    alpha_mode: AlphaMode::Mask(0.5),
+                    perceptual_roughness: 0.85,
+                    ..default()
+                },
+            );
+            let cat_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.cat_poster.clone()),
+                    perceptual_roughness: 0.65,
+                    ..default()
+                },
+            );
 
             commands
                 .spawn((
@@ -1718,6 +2090,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         part,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(1.64, 1.54, 0.10),
                         fabric,
@@ -1728,6 +2101,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         part,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(1.70, 0.06, 0.13),
                         alum_trim.clone(),
@@ -1736,14 +2110,14 @@ fn spawn_prop_prefab(
                     );
                     for sx in [-0.83_f32, 0.83_f32] {
                         part.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.05, 1.58, 0.12))),
+                            Mesh3d(cache.cuboid(meshes, 0.05, 1.58, 0.12)),
                             MeshMaterial3d(alum_trim.clone()),
                             Transform::from_xyz(sx, 0.0, 0.0),
                         ));
                     }
                     // Pinned memos on front & back
                     part.spawn((
-                        Mesh3d(meshes.add(make_upright_quad_mesh(0.42, 0.42))),
+                        Mesh3d(cache.upright_quad(meshes, 0.42, 0.42)),
                         MeshMaterial3d(memos_mat),
                         Transform::from_xyz(-0.34, 0.22, 0.062),
                     ));
@@ -1753,7 +2127,7 @@ fn spawn_prop_prefab(
                                 size: Vec2::new(0.38, 0.48),
                                 z_offset: 0.075,
                             },
-                            Mesh3d(meshes.add(make_upright_quad_mesh(0.38, 0.48))),
+                            Mesh3d(cache.upright_quad(meshes, 0.38, 0.48)),
                             MeshMaterial3d(cat_mat),
                             Transform::from_xyz(0.28, 0.18, 0.064)
                                 .with_rotation(Quat::from_rotation_z(-0.07)),
@@ -1763,22 +2137,31 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::FilingCabinetOlive3 | PropPrefab::FilingCabinetOlive4 => {
-            let olive = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.36, 0.41, 0.28),
-                perceptual_roughness: 0.62,
-                ..default()
-            });
-            let olive_drawer = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.30, 0.35, 0.23),
-                perceptual_roughness: 0.58,
-                ..default()
-            });
-            let chrome = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.76, 0.80, 0.82),
-                metallic: 0.6,
-                perceptual_roughness: 0.35,
-                ..default()
-            });
+            let olive = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.36, 0.41, 0.28),
+                    perceptual_roughness: 0.62,
+                    ..default()
+                },
+            );
+            let olive_drawer = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.30, 0.35, 0.23),
+                    perceptual_roughness: 0.58,
+                    ..default()
+                },
+            );
+            let chrome = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.76, 0.80, 0.82),
+                    metallic: 0.6,
+                    perceptual_roughness: 0.35,
+                    ..default()
+                },
+            );
 
             let (drawers, height, pts_def) = if p.prefab == PropPrefab::FilingCabinetOlive4 {
                 (4, 1.62_f32, 480)
@@ -1811,6 +2194,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         cab,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.62, height, 0.64),
                         olive,
@@ -1823,6 +2207,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             cab,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(0.52, step * 0.82, 0.03),
                             olive_drawer.clone(),
@@ -1831,12 +2216,12 @@ fn spawn_prop_prefab(
                         );
                         // Silver label holder + pull handle (`loading-desk.jpg`!)
                         cab.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.11, 0.045, 0.02))),
+                            Mesh3d(cache.cuboid(meshes, 0.11, 0.045, 0.02)),
                             MeshMaterial3d(chrome.clone()),
                             Transform::from_xyz(0.0, dy + 0.04, 0.345),
                         ));
                         cab.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.13, 0.02, 0.025))),
+                            Mesh3d(cache.cuboid(meshes, 0.13, 0.02, 0.025)),
                             MeshMaterial3d(chrome.clone()),
                             Transform::from_xyz(0.0, dy - 0.04, 0.348),
                         ));
@@ -1845,15 +2230,21 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::BinderPair => {
-            let dark_binder = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.18, 0.21, 0.27),
-                perceptual_roughness: 0.75,
-                ..default()
-            });
-            let spine_tag = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.90, 0.88, 0.80),
-                ..default()
-            });
+            let dark_binder = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.18, 0.21, 0.27),
+                    perceptual_roughness: 0.75,
+                    ..default()
+                },
+            );
+            let spine_tag = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.90, 0.88, 0.80),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -1878,6 +2269,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             b,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(0.085, 0.30, 0.25),
                             dark_binder.clone(),
@@ -1885,7 +2277,7 @@ fn spawn_prop_prefab(
                             0.008,
                         );
                         b.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.045, 0.09, 0.015))),
+                            Mesh3d(cache.cuboid(meshes, 0.045, 0.09, 0.015)),
                             MeshMaterial3d(spine_tag.clone()),
                             Transform::from_xyz(bx, 0.05, 0.128),
                         ));
@@ -1894,15 +2286,21 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::PaperInTray => {
-            let tray_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.16, 0.19, 0.24),
-                perceptual_roughness: 0.65,
-                ..default()
-            });
-            let page_mat = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.printed_page.clone()),
-                ..default()
-            });
+            let tray_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.16, 0.19, 0.24),
+                    perceptual_roughness: 0.65,
+                    ..default()
+                },
+            );
+            let page_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.printed_page.clone()),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -1927,6 +2325,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             tr,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(0.34, 0.05, 0.28),
                             tray_mat.clone(),
@@ -1934,7 +2333,7 @@ fn spawn_prop_prefab(
                             0.008,
                         );
                         tr.spawn((
-                            Mesh3d(meshes.add(make_floor_quad_mesh(0.28, 0.22))),
+                            Mesh3d(cache.floor_quad(meshes, 0.28, 0.22)),
                             MeshMaterial3d(page_mat.clone()),
                             Transform::from_xyz(0.0, ty + 0.028, 0.0),
                         ));
@@ -1943,30 +2342,45 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::WaterCooler => {
-            let body_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.84, 0.86, 0.89),
-                perceptual_roughness: 0.48,
-                ..default()
-            });
-            let recess_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.14, 0.17, 0.22),
-                ..default()
-            });
-            let jug_mat = materials.add(StandardMaterial {
-                base_color: Color::srgba(0.18, 0.62, 0.92, 0.82),
-                emissive: LinearRgba::rgb(0.06, 0.26, 0.44),
-                alpha_mode: AlphaMode::Blend,
-                perceptual_roughness: 0.16,
-                ..default()
-            });
-            let tap_red = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.90, 0.22, 0.20),
-                ..default()
-            });
-            let tap_blue = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.20, 0.56, 0.95),
-                ..default()
-            });
+            let body_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.84, 0.86, 0.89),
+                    perceptual_roughness: 0.48,
+                    ..default()
+                },
+            );
+            let recess_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.14, 0.17, 0.22),
+                    ..default()
+                },
+            );
+            let jug_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgba(0.18, 0.62, 0.92, 0.82),
+                    emissive: LinearRgba::rgb(0.06, 0.26, 0.44),
+                    alpha_mode: AlphaMode::Blend,
+                    perceptual_roughness: 0.16,
+                    ..default()
+                },
+            );
+            let tap_red = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.90, 0.22, 0.20),
+                    ..default()
+                },
+            );
+            let tap_blue = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.20, 0.56, 0.95),
+                    ..default()
+                },
+            );
 
             commands
                 .spawn((
@@ -1996,6 +2410,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         wc,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.44, 0.98, 0.44),
                         body_mat.clone(),
@@ -2004,28 +2419,28 @@ fn spawn_prop_prefab(
                     );
                     // Tap recess + red/blue hot/cold taps (`loading-desk.jpg`!)
                     wc.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.26, 0.22, 0.03))),
+                        Mesh3d(cache.cuboid(meshes, 0.26, 0.22, 0.03)),
                         MeshMaterial3d(recess_mat),
                         Transform::from_xyz(0.0, 0.18, 0.215),
                     ));
                     wc.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.04, 0.05, 0.04))),
+                        Mesh3d(cache.cuboid(meshes, 0.04, 0.05, 0.04)),
                         MeshMaterial3d(tap_red),
                         Transform::from_xyz(-0.06, 0.22, 0.23),
                     ));
                     wc.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.04, 0.05, 0.04))),
+                        Mesh3d(cache.cuboid(meshes, 0.04, 0.05, 0.04)),
                         MeshMaterial3d(tap_blue),
                         Transform::from_xyz(0.06, 0.22, 0.23),
                     ));
                     // Side cup dispenser tube
                     wc.spawn((
-                        Mesh3d(meshes.add(Cylinder::new(0.04, 0.36))),
+                        Mesh3d(cache.cylinder(meshes, 0.04, 0.36)),
                         MeshMaterial3d(body_mat),
                         Transform::from_xyz(0.25, 0.16, 0.08),
                     ));
                     // Ribbed 5-gallon translucent blue water jug
-                    let jug_mesh = meshes.add(Cylinder::new(0.185, 0.44));
+                    let jug_mesh = cache.cylinder(meshes, 0.185, 0.44);
                     wc.spawn((
                         Mesh3d(jug_mesh.clone()),
                         MeshMaterial3d(jug_mat),
@@ -2040,20 +2455,27 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::TrashBin => {
-            let bin_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.24, 0.28, 0.34),
-                perceptual_roughness: 0.78,
-                ..default()
-            });
-            let paper_ball = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.90, 0.92, 0.94),
-                ..default()
-            });
-            let bin_mesh = meshes.add(make_frustum_y_mesh(
+            let bin_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.24, 0.28, 0.34),
+                    perceptual_roughness: 0.78,
+                    ..default()
+                },
+            );
+            let paper_ball = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.90, 0.92, 0.94),
+                    ..default()
+                },
+            );
+            let bin_mesh = cache.frustum_y(
+                meshes,
                 Vec2::new(0.24, 0.24),
                 Vec2::new(0.34, 0.34),
                 0.42,
-            ));
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -2082,7 +2504,7 @@ fn spawn_prop_prefab(
                     ));
                     for (px, pz) in [(-0.05, 0.03), (0.06, -0.04), (0.01, 0.05)] {
                         tb.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.09, 0.09, 0.09))),
+                            Mesh3d(cache.cuboid(meshes, 0.09, 0.09, 0.09)),
                             MeshMaterial3d(paper_ball.clone()),
                             Transform::from_xyz(px, 0.16, pz)
                                 .with_rotation(Quat::from_rotation_y(0.6)),
@@ -2093,21 +2515,27 @@ fn spawn_prop_prefab(
 
         PropPrefab::SwivelChair | PropPrefab::LeatherExecChair => {
             let is_exec = p.prefab == PropPrefab::LeatherExecChair;
-            let cushion = materials.add(StandardMaterial {
-                base_color: if is_exec {
-                    Color::srgb(0.28, 0.14, 0.10)
-                } else {
-                    Color::srgb(0.16, 0.19, 0.25)
+            let cushion = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: if is_exec {
+                        Color::srgb(0.28, 0.14, 0.10)
+                    } else {
+                        Color::srgb(0.16, 0.19, 0.25)
+                    },
+                    perceptual_roughness: if is_exec { 0.45 } else { 0.78 },
+                    ..default()
                 },
-                perceptual_roughness: if is_exec { 0.45 } else { 0.78 },
-                ..default()
-            });
-            let frame_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.12, 0.14, 0.18),
-                metallic: 0.4,
-                perceptual_roughness: 0.5,
-                ..default()
-            });
+            );
+            let frame_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.12, 0.14, 0.18),
+                    metallic: 0.4,
+                    perceptual_roughness: 0.5,
+                    ..default()
+                },
+            );
             let back_h = if is_exec { 0.64 } else { 0.44 };
 
             commands
@@ -2140,20 +2568,21 @@ fn spawn_prop_prefab(
                     for i in 0..5 {
                         let a = (i as f32 / 5.0) * std::f32::consts::TAU;
                         ch.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.05, 0.04, 0.28))),
+                            Mesh3d(cache.cuboid(meshes, 0.05, 0.04, 0.28)),
                             MeshMaterial3d(frame_mat.clone()),
                             Transform::from_xyz(a.sin() * 0.13, -0.42, a.cos() * 0.13)
                                 .with_rotation(Quat::from_rotation_y(a)),
                         ));
                     }
                     ch.spawn((
-                        Mesh3d(meshes.add(Cylinder::new(0.038, 0.38))),
+                        Mesh3d(cache.cylinder(meshes, 0.038, 0.38)),
                         MeshMaterial3d(frame_mat.clone()),
                         Transform::from_xyz(0.0, -0.22, 0.0),
                     ));
                     spawn_outlined_box(
                         ch,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.50, 0.09, 0.48),
                         cushion.clone(),
@@ -2163,6 +2592,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         ch,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.46, back_h, 0.09),
                         cushion,
@@ -2172,12 +2602,12 @@ fn spawn_prop_prefab(
                     // Armrests (`loading-desk.jpg`!)
                     for ax in [-0.25_f32, 0.25_f32] {
                         ch.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.04, 0.18, 0.04))),
+                            Mesh3d(cache.cuboid(meshes, 0.04, 0.18, 0.04)),
                             MeshMaterial3d(frame_mat.clone()),
                             Transform::from_xyz(ax, 0.10, -0.04),
                         ));
                         ch.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.06, 0.035, 0.28))),
+                            Mesh3d(cache.cuboid(meshes, 0.06, 0.035, 0.28)),
                             MeshMaterial3d(frame_mat.clone()),
                             Transform::from_xyz(ax, 0.19, -0.02),
                         ));
@@ -2186,16 +2616,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::CoworkerDesk => {
-            let wood = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.walnut_desk.clone()),
-                uv_transform: Affine2::from_scale(Vec2::new(2.0, 1.0)),
-                perceptual_roughness: 0.65,
-                ..default()
-            });
-            let leg = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.20, 0.12, 0.07),
-                ..default()
-            });
+            let wood = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.walnut_desk.clone()),
+                    uv_transform: Affine2::from_scale(Vec2::new(2.0, 1.0)),
+                    perceptual_roughness: 0.65,
+                    ..default()
+                },
+            );
+            let leg = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.20, 0.12, 0.07),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -2221,6 +2657,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         dk,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(1.75, 0.07, 0.84),
                         wood.clone(),
@@ -2231,6 +2668,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             dk,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(0.12, 0.68, 0.76),
                             leg.clone(),
@@ -2242,20 +2680,29 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::PcTower => {
-            let chassis = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.20, 0.23, 0.29),
-                perceptual_roughness: 0.62,
-                ..default()
-            });
-            let drive = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.12, 0.14, 0.18),
-                ..default()
-            });
-            let led = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.25, 0.98, 0.45),
-                emissive: LinearRgba::rgb(0.4, 2.2, 0.6),
-                ..default()
-            });
+            let chassis = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.20, 0.23, 0.29),
+                    perceptual_roughness: 0.62,
+                    ..default()
+                },
+            );
+            let drive = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.12, 0.14, 0.18),
+                    ..default()
+                },
+            );
+            let led = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.25, 0.98, 0.45),
+                    emissive: LinearRgba::rgb(0.4, 2.2, 0.6),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -2279,6 +2726,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         pc,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.24, 0.52, 0.48),
                         chassis,
@@ -2287,13 +2735,13 @@ fn spawn_prop_prefab(
                     );
                     for dy in [0.16_f32, 0.08] {
                         pc.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.18, 0.045, 0.02))),
+                            Mesh3d(cache.cuboid(meshes, 0.18, 0.045, 0.02)),
                             MeshMaterial3d(drive.clone()),
                             Transform::from_xyz(0.0, dy, 0.242),
                         ));
                     }
                     pc.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.025, 0.025, 0.02))),
+                        Mesh3d(cache.cuboid(meshes, 0.025, 0.025, 0.02)),
                         MeshMaterial3d(led),
                         Transform::from_xyz(-0.06, -0.04, 0.244),
                     ));
@@ -2301,20 +2749,29 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::OfficeCopier => {
-            let body = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.82, 0.81, 0.76),
-                perceptual_roughness: 0.55,
-                ..default()
-            });
-            let dark = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.18, 0.21, 0.26),
-                ..default()
-            });
-            let led = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.98, 0.32, 0.24),
-                emissive: LinearRgba::rgb(2.4, 0.4, 0.25),
-                ..default()
-            });
+            let body = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.82, 0.81, 0.76),
+                    perceptual_roughness: 0.55,
+                    ..default()
+                },
+            );
+            let dark = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.18, 0.21, 0.26),
+                    ..default()
+                },
+            );
+            let led = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.98, 0.32, 0.24),
+                    emissive: LinearRgba::rgb(2.4, 0.4, 0.25),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -2338,6 +2795,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         pr,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.74, 0.58, 0.62),
                         body.clone(),
@@ -2347,6 +2805,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         pr,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.64, 0.38, 0.54),
                         dark.clone(),
@@ -2357,6 +2816,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         pr,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.70, 0.06, 0.58),
                         body,
@@ -2366,7 +2826,7 @@ fn spawn_prop_prefab(
                     );
                     // Blinking red jam indicator!
                     pr.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.09, 0.04, 0.03))),
+                        Mesh3d(cache.cuboid(meshes, 0.09, 0.04, 0.03)),
                         MeshMaterial3d(led),
                         Transform::from_xyz(0.24, 0.30, 0.315),
                     ));
@@ -2374,11 +2834,14 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::BookshelfManuals => {
-            let wood = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.46, 0.28, 0.15),
-                perceptual_roughness: 0.74,
-                ..default()
-            });
+            let wood = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.46, 0.28, 0.15),
+                    perceptual_roughness: 0.74,
+                    ..default()
+                },
+            );
             let book_colors = [
                 Color::srgb(0.82, 0.22, 0.22),
                 Color::srgb(0.20, 0.50, 0.82),
@@ -2408,6 +2871,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         bs,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(1.12, 1.66, 0.42),
                         wood,
@@ -2416,15 +2880,19 @@ fn spawn_prop_prefab(
                     );
                     for (r, by) in [-0.42_f32, 0.08, 0.54].iter().enumerate() {
                         for b_idx in 0..5 {
-                            let bm = materials.add(StandardMaterial {
-                                base_color: book_colors[(r + b_idx) % book_colors.len()],
-                                perceptual_roughness: 0.68,
-                                ..default()
-                            });
+                            let bm = cache.material(
+                                materials,
+                                StandardMaterial {
+                                    base_color: book_colors[(r + b_idx) % book_colors.len()],
+                                    perceptual_roughness: 0.68,
+                                    ..default()
+                                },
+                            );
                             let bx = -0.36 + b_idx as f32 * 0.18;
                             spawn_outlined_box(
                                 bs,
                                 meshes,
+                                cache,
                                 shared,
                                 Vec3::new(0.14, 0.26, 0.28),
                                 bm,
@@ -2437,21 +2905,28 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::OfficeFern => {
-            let pot_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.76, 0.38, 0.21),
-                perceptual_roughness: 0.80,
-                ..default()
-            });
-            let leaf_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.18, 0.62, 0.30),
-                perceptual_roughness: 0.72,
-                ..default()
-            });
-            let pot_mesh = meshes.add(make_frustum_y_mesh(
+            let pot_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.76, 0.38, 0.21),
+                    perceptual_roughness: 0.80,
+                    ..default()
+                },
+            );
+            let leaf_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.18, 0.62, 0.30),
+                    perceptual_roughness: 0.72,
+                    ..default()
+                },
+            );
+            let pot_mesh = cache.frustum_y(
+                meshes,
                 Vec2::new(0.24, 0.24),
                 Vec2::new(0.38, 0.38),
                 0.38,
-            ));
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -2488,6 +2963,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             pl,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(0.14, 0.38, 0.06),
                             leaf_mat.clone(),
@@ -2502,31 +2978,37 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::FluorescentFixture => {
-            let housing = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.22, 0.26, 0.34),
-                ..default()
-            });
-            let tube = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.94, 0.98, 1.0),
-                emissive: LinearRgba::rgb(1.45, 1.55, 1.65),
-                ..default()
-            });
+            let housing = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.22, 0.26, 0.34),
+                    ..default()
+                },
+            );
+            let tube = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.94, 0.98, 1.0),
+                    emissive: LinearRgba::rgb(1.45, 1.55, 1.65),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
-                    Mesh3d(meshes.add(Cuboid::new(2.3, 0.07, 0.48))),
+                    Mesh3d(cache.cuboid(meshes, 2.3, 0.07, 0.48)),
                     MeshMaterial3d(housing.clone()),
                     tf,
                 ))
                 .with_children(|fl| {
                     fl.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(2.18, 0.03, 0.36))),
+                        Mesh3d(cache.cuboid(meshes, 2.18, 0.03, 0.36)),
                         MeshMaterial3d(tube),
                         Transform::from_xyz(0.0, -0.035, 0.0),
                     ));
                     for cx in [-0.85_f32, 0.85_f32] {
                         fl.spawn((
-                            Mesh3d(meshes.add(Cylinder::new(0.012, 0.45))),
+                            Mesh3d(cache.cylinder(meshes, 0.012, 0.45)),
                             MeshMaterial3d(housing.clone()),
                             Transform::from_xyz(cx, 0.24, 0.0),
                         ));
@@ -2535,16 +3017,20 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::HardHat => {
-            let yellow = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.98, 0.76, 0.10),
-                perceptual_roughness: 0.34,
-                ..default()
-            });
-            let dome = meshes.add(make_frustum_y_mesh(
+            let yellow = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.98, 0.76, 0.10),
+                    perceptual_roughness: 0.34,
+                    ..default()
+                },
+            );
+            let dome = cache.frustum_y(
+                meshes,
                 Vec2::new(0.26, 0.30),
                 Vec2::new(0.15, 0.19),
                 0.13,
-            ));
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -2574,6 +3060,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         hat,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.28, 0.022, 0.36),
                         yellow,
@@ -2584,15 +3071,21 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::RolledBlueprints => {
-            let bp_mat = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.blueprint_page.clone()),
-                perceptual_roughness: 0.80,
-                ..default()
-            });
-            let band_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.82, 0.28, 0.24),
-                ..default()
-            });
+            let bp_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.blueprint_page.clone()),
+                    perceptual_roughness: 0.80,
+                    ..default()
+                },
+            );
+            let band_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.82, 0.28, 0.24),
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::small(
                 lbl("BLUEPRINTS!"),
                 pts(180),
@@ -2602,7 +3095,7 @@ fn spawn_prop_prefab(
                 SfxMaterial::Paper,
             );
             prop.break_impulse = 1.6;
-            let cyl = meshes.add(Cylinder::new(0.052, 0.54));
+            let cyl = cache.cylinder(meshes, 0.052, 0.54);
             commands
                 .spawn((
                     ScenarioEntity,
@@ -2628,7 +3121,7 @@ fn spawn_prop_prefab(
                         Transform::from_rotation(rot).with_scale(Vec3::new(1.14, 1.03, 1.14)),
                     ));
                     bp.spawn((
-                        Mesh3d(meshes.add(Cylinder::new(0.056, 0.03))),
+                        Mesh3d(cache.cylinder(meshes, 0.056, 0.03)),
                         MeshMaterial3d(band_mat),
                         Transform::from_rotation(rot),
                     ));
@@ -2636,18 +3129,24 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::RedThermos => {
-            let red = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.78, 0.18, 0.16),
-                perceptual_roughness: 0.38,
-                ..default()
-            });
-            let steel = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.72, 0.76, 0.80),
-                metallic: 0.65,
-                perceptual_roughness: 0.32,
-                ..default()
-            });
-            let body = meshes.add(Cylinder::new(0.062, 0.25));
+            let red = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.78, 0.18, 0.16),
+                    perceptual_roughness: 0.38,
+                    ..default()
+                },
+            );
+            let steel = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.72, 0.76, 0.80),
+                    metallic: 0.65,
+                    perceptual_roughness: 0.32,
+                    ..default()
+                },
+            );
+            let body = cache.cylinder(meshes, 0.062, 0.25);
             commands
                 .spawn((
                     ScenarioEntity,
@@ -2678,7 +3177,7 @@ fn spawn_prop_prefab(
                         Transform::from_scale(Vec3::new(1.12, 1.05, 1.12)),
                     ));
                     th.spawn((
-                        Mesh3d(meshes.add(Cylinder::new(0.056, 0.06))),
+                        Mesh3d(cache.cylinder(meshes, 0.056, 0.06)),
                         MeshMaterial3d(steel),
                         Transform::from_xyz(0.0, 0.14, 0.0),
                     ));
@@ -2686,15 +3185,21 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::WalkieTalkie => {
-            let dark = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.16, 0.18, 0.22),
-                ..default()
-            });
-            let amber = materials.add(StandardMaterial {
-                base_color: Color::srgb(1.0, 0.72, 0.18),
-                emissive: LinearRgba::rgb(2.0, 1.2, 0.2),
-                ..default()
-            });
+            let dark = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.16, 0.18, 0.22),
+                    ..default()
+                },
+            );
+            let amber = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(1.0, 0.72, 0.18),
+                    emissive: LinearRgba::rgb(2.0, 1.2, 0.2),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -2718,6 +3223,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         r,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.085, 0.18, 0.055),
                         dark.clone(),
@@ -2725,12 +3231,12 @@ fn spawn_prop_prefab(
                         0.008,
                     );
                     r.spawn((
-                        Mesh3d(meshes.add(Cylinder::new(0.010, 0.14))),
+                        Mesh3d(cache.cylinder(meshes, 0.010, 0.14)),
                         MeshMaterial3d(dark),
                         Transform::from_xyz(0.025, 0.15, 0.0),
                     ));
                     r.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.05, 0.035, 0.01))),
+                        Mesh3d(cache.cuboid(meshes, 0.05, 0.035, 0.01)),
                         MeshMaterial3d(amber),
                         Transform::from_xyz(0.0, 0.04, 0.030),
                     ));
@@ -2738,17 +3244,23 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::SiteWhiteboard => {
-            let board_mat = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.whiteboard_doodle.clone()),
-                perceptual_roughness: 0.35,
-                ..default()
-            });
-            let frame_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.52, 0.56, 0.62),
-                metallic: 0.45,
-                perceptual_roughness: 0.45,
-                ..default()
-            });
+            let board_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.whiteboard_doodle.clone()),
+                    perceptual_roughness: 0.35,
+                    ..default()
+                },
+            );
+            let frame_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.52, 0.56, 0.62),
+                    metallic: 0.45,
+                    perceptual_roughness: 0.45,
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -2772,6 +3284,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         wb,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(1.54, 1.12, 0.06),
                         frame_mat.clone(),
@@ -2783,13 +3296,13 @@ fn spawn_prop_prefab(
                             size: Vec2::new(1.46, 1.04),
                             z_offset: 0.04,
                         },
-                        Mesh3d(meshes.add(make_upright_quad_mesh(1.46, 1.04))),
+                        Mesh3d(cache.upright_quad(meshes, 1.46, 1.04)),
                         MeshMaterial3d(board_mat),
                         Transform::from_xyz(0.0, 0.14, 0.034),
                     ));
                     for lx in [-0.72_f32, 0.72_f32] {
                         wb.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.05, 0.72, 0.05))),
+                            Mesh3d(cache.cuboid(meshes, 0.05, 0.72, 0.05)),
                             MeshMaterial3d(frame_mat.clone()),
                             Transform::from_xyz(lx, -0.38, 0.0),
                         ));
@@ -2798,15 +3311,21 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::MiniFridge => {
-            let body = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.86, 0.88, 0.90),
-                perceptual_roughness: 0.40,
-                ..default()
-            });
-            let handle = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.22, 0.25, 0.30),
-                ..default()
-            });
+            let body = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.86, 0.88, 0.90),
+                    perceptual_roughness: 0.40,
+                    ..default()
+                },
+            );
+            let handle = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.22, 0.25, 0.30),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -2833,6 +3352,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         fr,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.66, 0.96, 0.64),
                         body,
@@ -2840,7 +3360,7 @@ fn spawn_prop_prefab(
                         0.014,
                     );
                     fr.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.04, 0.28, 0.04))),
+                        Mesh3d(cache.cuboid(meshes, 0.04, 0.28, 0.04)),
                         MeshMaterial3d(handle),
                         Transform::from_xyz(-0.24, 0.18, 0.335),
                     ));
@@ -2848,21 +3368,28 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::TrafficCone => {
-            let orange = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.98, 0.40, 0.08),
-                perceptual_roughness: 0.48,
-                ..default()
-            });
-            let white = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.95, 0.96, 0.98),
-                emissive: LinearRgba::rgb(0.25, 0.25, 0.25),
-                ..default()
-            });
-            let cone_mesh = meshes.add(make_frustum_y_mesh(
+            let orange = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.98, 0.40, 0.08),
+                    perceptual_roughness: 0.48,
+                    ..default()
+                },
+            );
+            let white = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.95, 0.96, 0.98),
+                    emissive: LinearRgba::rgb(0.25, 0.25, 0.25),
+                    ..default()
+                },
+            );
+            let cone_mesh = cache.frustum_y(
+                meshes,
                 Vec2::new(0.32, 0.32),
                 Vec2::new(0.08, 0.08),
                 0.52,
-            ));
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -2886,6 +3413,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         cn,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.38, 0.04, 0.38),
                         orange.clone(),
@@ -2899,11 +3427,12 @@ fn spawn_prop_prefab(
                         Transform::from_scale(Vec3::splat(1.07)),
                     ));
                     cn.spawn((
-                        Mesh3d(meshes.add(make_frustum_y_mesh(
+                        Mesh3d(cache.frustum_y(
+                            meshes,
                             Vec2::new(0.21, 0.21),
                             Vec2::new(0.16, 0.16),
                             0.10,
-                        ))),
+                        )),
                         MeshMaterial3d(white),
                         Transform::from_xyz(0.0, 0.06, 0.0),
                     ));
@@ -2911,16 +3440,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::RedToolbox => {
-            let red = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.82, 0.15, 0.15),
-                perceptual_roughness: 0.42,
-                ..default()
-            });
-            let latch = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.80, 0.82, 0.86),
-                metallic: 0.65,
-                ..default()
-            });
+            let red = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.82, 0.15, 0.15),
+                    perceptual_roughness: 0.42,
+                    ..default()
+                },
+            );
+            let latch = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.80, 0.82, 0.86),
+                    metallic: 0.65,
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -2944,6 +3479,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         tb,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.68, 0.42, 0.36),
                         red,
@@ -2952,7 +3488,7 @@ fn spawn_prop_prefab(
                     );
                     for lx in [-0.18_f32, 0.18_f32] {
                         tb.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.06, 0.07, 0.03))),
+                            Mesh3d(cache.cuboid(meshes, 0.06, 0.07, 0.03)),
                             MeshMaterial3d(latch.clone()),
                             Transform::from_xyz(lx, 0.08, 0.185),
                         ));
@@ -2966,17 +3502,23 @@ fn spawn_prop_prefab(
                 PropPrefab::PaintCanRed => Color::srgb(0.96, 0.24, 0.20),
                 _ => Color::srgb(0.98, 0.80, 0.14),
             };
-            let tin = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.74, 0.77, 0.81),
-                metallic: 0.55,
-                perceptual_roughness: 0.38,
-                ..default()
-            });
-            let stripe = materials.add(StandardMaterial {
-                base_color: paint_col,
-                perceptual_roughness: 0.32,
-                ..default()
-            });
+            let tin = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.74, 0.77, 0.81),
+                    metallic: 0.55,
+                    perceptual_roughness: 0.38,
+                    ..default()
+                },
+            );
+            let stripe = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: paint_col,
+                    perceptual_roughness: 0.32,
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::small(
                 lbl("PAINT SPLATTER!"),
                 pts(210),
@@ -2989,7 +3531,7 @@ fn spawn_prop_prefab(
                 SfxMaterial::Liquid,
             );
             prop.break_impulse = 1.8;
-            let cyl = meshes.add(Cylinder::new(0.135, 0.30));
+            let cyl = cache.cylinder(meshes, 0.135, 0.30);
             commands
                 .spawn((
                     ScenarioEntity,
@@ -3010,22 +3552,28 @@ fn spawn_prop_prefab(
                         Transform::from_scale(Vec3::new(1.10, 1.05, 1.10)),
                     ));
                     pc.spawn((
-                        Mesh3d(meshes.add(Cylinder::new(0.139, 0.15))),
+                        Mesh3d(cache.cylinder(meshes, 0.139, 0.15)),
                         MeshMaterial3d(stripe),
                     ));
                 });
         }
 
         PropPrefab::FireExtinguisher => {
-            let red = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.90, 0.12, 0.12),
-                perceptual_roughness: 0.32,
-                ..default()
-            });
-            let dark = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.14, 0.16, 0.20),
-                ..default()
-            });
+            let red = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.90, 0.12, 0.12),
+                    perceptual_roughness: 0.32,
+                    ..default()
+                },
+            );
+            let dark = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.14, 0.16, 0.20),
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("EXTINGUISHER BLAST!"),
                 pts(600),
@@ -3036,7 +3584,7 @@ fn spawn_prop_prefab(
             );
             prop.damage_impulse = 1.2;
             prop.break_impulse = 2.4;
-            let tank = meshes.add(Cylinder::new(0.11, 0.56));
+            let tank = cache.cylinder(meshes, 0.11, 0.56);
             commands
                 .spawn((
                     ScenarioEntity,
@@ -3059,6 +3607,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         fe,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.10, 0.10, 0.12),
                         dark,
@@ -3069,16 +3618,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::StepLadder => {
-            let alum = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.68, 0.72, 0.78),
-                metallic: 0.55,
-                perceptual_roughness: 0.42,
-                ..default()
-            });
-            let cap = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.96, 0.74, 0.14),
-                ..default()
-            });
+            let alum = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.68, 0.72, 0.78),
+                    metallic: 0.55,
+                    perceptual_roughness: 0.42,
+                    ..default()
+                },
+            );
+            let cap = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.96, 0.74, 0.14),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -3104,6 +3659,7 @@ fn spawn_prop_prefab(
                             spawn_outlined_box(
                                 ld,
                                 meshes,
+                                cache,
                                 shared,
                                 Vec3::new(0.045, 1.38, 0.045),
                                 alum.clone(),
@@ -3115,7 +3671,7 @@ fn spawn_prop_prefab(
                     }
                     for ry in [-0.42_f32, -0.10, 0.22] {
                         ld.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.48, 0.03, 0.08))),
+                            Mesh3d(cache.cuboid(meshes, 0.48, 0.03, 0.08)),
                             MeshMaterial3d(alum.clone()),
                             Transform::from_xyz(0.0, ry, 0.16 - ry * 0.18),
                         ));
@@ -3123,6 +3679,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         ld,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.52, 0.06, 0.22),
                         cap,
@@ -3133,18 +3690,24 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::LaptopSilver => {
-            let silver = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.76, 0.79, 0.84),
-                metallic: 0.65,
-                perceptual_roughness: 0.32,
-                ..default()
-            });
-            let screen = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.stock_crash_tv.clone()),
-                emissive: LinearRgba::rgb(0.45, 0.55, 0.75),
-                emissive_texture: Some(textures.stock_crash_tv.clone()),
-                ..default()
-            });
+            let silver = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.76, 0.79, 0.84),
+                    metallic: 0.65,
+                    perceptual_roughness: 0.32,
+                    ..default()
+                },
+            );
+            let screen = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.stock_crash_tv.clone()),
+                    emissive: LinearRgba::rgb(0.45, 0.55, 0.75),
+                    emissive_texture: Some(textures.stock_crash_tv.clone()),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -3168,6 +3731,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         lp,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.36, 0.02, 0.25),
                         silver.clone(),
@@ -3178,6 +3742,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         lp,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.36, 0.24, 0.018),
                         silver,
@@ -3186,7 +3751,7 @@ fn spawn_prop_prefab(
                     );
                     lp.spawn((
                         ScreenSurface,
-                        Mesh3d(meshes.add(make_upright_quad_mesh(0.33, 0.20))),
+                        Mesh3d(cache.upright_quad(meshes, 0.33, 0.20)),
                         MeshMaterial3d(screen),
                         Transform::from_xyz(0.0, 0.03, -0.088).with_rotation(lid_rot),
                     ));
@@ -3195,19 +3760,25 @@ fn spawn_prop_prefab(
 
         PropPrefab::CrystalDecanter | PropPrefab::CrystalGlass => {
             let is_dec = p.prefab == PropPrefab::CrystalDecanter;
-            let crystal = materials.add(StandardMaterial {
-                base_color: Color::srgba(0.84, 0.94, 1.0, 0.72),
-                emissive: LinearRgba::rgb(0.15, 0.22, 0.30),
-                alpha_mode: AlphaMode::Blend,
-                perceptual_roughness: 0.12,
-                ..default()
-            });
-            let amber = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.76, 0.38, 0.08),
-                emissive: LinearRgba::rgb(0.35, 0.14, 0.02),
-                perceptual_roughness: 0.18,
-                ..default()
-            });
+            let crystal = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgba(0.84, 0.94, 1.0, 0.72),
+                    emissive: LinearRgba::rgb(0.15, 0.22, 0.30),
+                    alpha_mode: AlphaMode::Blend,
+                    perceptual_roughness: 0.12,
+                    ..default()
+                },
+            );
+            let amber = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.76, 0.38, 0.08),
+                    emissive: LinearRgba::rgb(0.35, 0.14, 0.02),
+                    perceptual_roughness: 0.18,
+                    ..default()
+                },
+            );
             let h = if is_dec { 0.24 } else { 0.11 };
             let w = if is_dec { 0.12 } else { 0.075 };
             let mut prop = DestructibleProp::small(
@@ -3240,6 +3811,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         cg,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(w, h, w),
                         crystal.clone(),
@@ -3247,7 +3819,7 @@ fn spawn_prop_prefab(
                         0.007,
                     );
                     cg.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(w * 0.76, h * 0.45, w * 0.76))),
+                        Mesh3d(cache.cuboid(meshes, w * 0.76, h * 0.45, w * 0.76)),
                         MeshMaterial3d(amber),
                         Transform::from_xyz(0.0, -h * 0.2, 0.0),
                     ));
@@ -3255,6 +3827,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             cg,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(0.055, 0.06, 0.055),
                             crystal,
@@ -3266,17 +3839,23 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::StockCrashTv => {
-            let bezel = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.10, 0.12, 0.16),
-                perceptual_roughness: 0.42,
-                ..default()
-            });
-            let screen = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.stock_crash_tv.clone()),
-                emissive: LinearRgba::rgb(0.95, 0.42, 0.42),
-                emissive_texture: Some(textures.stock_crash_tv.clone()),
-                ..default()
-            });
+            let bezel = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.10, 0.12, 0.16),
+                    perceptual_roughness: 0.42,
+                    ..default()
+                },
+            );
+            let screen = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.stock_crash_tv.clone()),
+                    emissive: LinearRgba::rgb(0.95, 0.42, 0.42),
+                    emissive_texture: Some(textures.stock_crash_tv.clone()),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -3300,6 +3879,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         tv,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(1.72, 0.98, 0.08),
                         bezel.clone(),
@@ -3308,13 +3888,14 @@ fn spawn_prop_prefab(
                     );
                     tv.spawn((
                         ScreenSurface,
-                        Mesh3d(meshes.add(make_upright_quad_mesh(1.60, 0.88))),
+                        Mesh3d(cache.upright_quad(meshes, 1.60, 0.88)),
                         MeshMaterial3d(screen),
                         Transform::from_xyz(0.0, 0.0, 0.046),
                     ));
                     spawn_outlined_box(
                         tv,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.54, 0.06, 0.30),
                         bezel,
@@ -3325,18 +3906,24 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::GlassPartition => {
-            let glass = materials.add(StandardMaterial {
-                base_color: Color::srgba(0.62, 0.84, 0.96, 0.42),
-                emissive: LinearRgba::rgb(0.08, 0.16, 0.22),
-                alpha_mode: AlphaMode::Blend,
-                perceptual_roughness: 0.12,
-                ..default()
-            });
-            let frame = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.14, 0.17, 0.22),
-                metallic: 0.5,
-                ..default()
-            });
+            let glass = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgba(0.62, 0.84, 0.96, 0.42),
+                    emissive: LinearRgba::rgb(0.08, 0.16, 0.22),
+                    alpha_mode: AlphaMode::Blend,
+                    perceptual_roughness: 0.12,
+                    ..default()
+                },
+            );
+            let frame = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.14, 0.17, 0.22),
+                    metallic: 0.5,
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("GLASS WALL!"),
                 pts(520),
@@ -3366,13 +3953,14 @@ fn spawn_prop_prefab(
                             size: Vec2::new(1.36, 1.68),
                             z_offset: 0.03,
                         },
-                        Mesh3d(meshes.add(Cuboid::new(1.38, 1.72, 0.03))),
+                        Mesh3d(cache.cuboid(meshes, 1.38, 1.72, 0.03)),
                         MeshMaterial3d(glass),
                     ));
                     for y in [-0.88_f32, 0.88_f32] {
                         spawn_outlined_box(
                             gp,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(1.48, 0.06, 0.09),
                             frame.clone(),
@@ -3382,7 +3970,7 @@ fn spawn_prop_prefab(
                     }
                     for x in [-0.71_f32, 0.71_f32] {
                         gp.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.06, 1.82, 0.09))),
+                            Mesh3d(cache.cuboid(meshes, 0.06, 1.82, 0.09)),
                             MeshMaterial3d(frame.clone()),
                             Transform::from_xyz(x, 0.0, 0.0),
                         ));
@@ -3391,16 +3979,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::EspressoMachine => {
-            let chrome = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.82, 0.84, 0.88),
-                metallic: 0.75,
-                perceptual_roughness: 0.24,
-                ..default()
-            });
-            let red_accent = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.76, 0.14, 0.14),
-                ..default()
-            });
+            let chrome = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.82, 0.84, 0.88),
+                    metallic: 0.75,
+                    perceptual_roughness: 0.24,
+                    ..default()
+                },
+            );
+            let red_accent = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.76, 0.14, 0.14),
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::small(
                 lbl("ESPRESSO BOILER!"),
                 pts(650),
@@ -3434,6 +4028,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         em,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.44, 0.40, 0.36),
                         chrome,
@@ -3443,6 +4038,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         em,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.46, 0.06, 0.38),
                         red_accent,
@@ -3453,16 +4049,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::ComputerMouseAndPad => {
-            let pad_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.12, 0.44, 0.52),
-                perceptual_roughness: 0.88,
-                ..default()
-            });
-            let mouse_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.84, 0.79, 0.67),
-                perceptual_roughness: 0.58,
-                ..default()
-            });
+            let pad_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.12, 0.44, 0.52),
+                    perceptual_roughness: 0.88,
+                    ..default()
+                },
+            );
+            let mouse_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.84, 0.79, 0.67),
+                    perceptual_roughness: 0.58,
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -3484,13 +4086,14 @@ fn spawn_prop_prefab(
                 ))
                 .with_children(|m| {
                     m.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.21, 0.008, 0.23))),
+                        Mesh3d(cache.cuboid(meshes, 0.21, 0.008, 0.23)),
                         MeshMaterial3d(pad_mat),
                         Transform::from_xyz(0.0, -0.016, 0.0),
                     ));
                     spawn_outlined_box(
                         m,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.075, 0.034, 0.115),
                         mouse_mat,
@@ -3501,15 +4104,21 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::DeskPhone => {
-            let body = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.16, 0.18, 0.23),
-                perceptual_roughness: 0.62,
-                ..default()
-            });
-            let keys = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.76, 0.78, 0.82),
-                ..default()
-            });
+            let body = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.16, 0.18, 0.23),
+                    perceptual_roughness: 0.62,
+                    ..default()
+                },
+            );
+            let keys = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.76, 0.78, 0.82),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -3533,6 +4142,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         ph,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.20, 0.055, 0.19),
                         body.clone(),
@@ -3542,6 +4152,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         ph,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.055, 0.04, 0.21),
                         body,
@@ -3549,7 +4160,7 @@ fn spawn_prop_prefab(
                         0.007,
                     );
                     ph.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.08, 0.015, 0.09))),
+                        Mesh3d(cache.cuboid(meshes, 0.08, 0.015, 0.09)),
                         MeshMaterial3d(keys),
                         Transform::from_xyz(0.035, 0.032, 0.02)
                             .with_rotation(Quat::from_rotation_x(0.15)),
@@ -3558,18 +4169,24 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::DeskLamp => {
-            let brass = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.76, 0.58, 0.22),
-                metallic: 0.7,
-                perceptual_roughness: 0.32,
-                ..default()
-            });
-            let shade = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.16, 0.52, 0.30),
-                emissive: LinearRgba::rgb(0.18, 0.55, 0.24),
-                perceptual_roughness: 0.35,
-                ..default()
-            });
+            let brass = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.76, 0.58, 0.22),
+                    metallic: 0.7,
+                    perceptual_roughness: 0.32,
+                    ..default()
+                },
+            );
+            let shade = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.16, 0.52, 0.30),
+                    emissive: LinearRgba::rgb(0.18, 0.55, 0.24),
+                    perceptual_roughness: 0.35,
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -3593,6 +4210,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         lm,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.15, 0.03, 0.15),
                         brass.clone(),
@@ -3600,15 +4218,16 @@ fn spawn_prop_prefab(
                         0.007,
                     );
                     lm.spawn((
-                        Mesh3d(meshes.add(Cylinder::new(0.016, 0.26))),
+                        Mesh3d(cache.cylinder(meshes, 0.016, 0.26)),
                         MeshMaterial3d(brass),
                         Transform::from_xyz(0.0, -0.01, -0.02),
                     ));
-                    let shade_mesh = meshes.add(make_frustum_y_mesh(
+                    let shade_mesh = cache.frustum_y(
+                        meshes,
                         Vec2::new(0.23, 0.15),
                         Vec2::new(0.16, 0.09),
                         0.09,
-                    ));
+                    );
                     lm.spawn((
                         Mesh3d(shade_mesh.clone()),
                         MeshMaterial3d(shade),
@@ -3623,19 +4242,28 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::PencilCup => {
-            let cup_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.22, 0.26, 0.34),
-                ..default()
-            });
-            let yellow = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.96, 0.78, 0.18),
-                ..default()
-            });
-            let blue = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.22, 0.56, 0.94),
-                ..default()
-            });
-            let cup = meshes.add(Cylinder::new(0.048, 0.11));
+            let cup_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.22, 0.26, 0.34),
+                    ..default()
+                },
+            );
+            let yellow = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.96, 0.78, 0.18),
+                    ..default()
+                },
+            );
+            let blue = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.22, 0.56, 0.94),
+                    ..default()
+                },
+            );
+            let cup = cache.cylinder(meshes, 0.048, 0.11);
             commands
                 .spawn((
                     ScenarioEntity,
@@ -3676,7 +4304,7 @@ fn spawn_prop_prefab(
                     .enumerate()
                     {
                         pc.spawn((
-                            Mesh3d(meshes.add(Cylinder::new(0.007, 0.14))),
+                            Mesh3d(cache.cylinder(meshes, 0.007, 0.14)),
                             MeshMaterial3d(if i % 2 == 0 {
                                 yellow.clone()
                             } else {
@@ -3690,14 +4318,20 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::PictureFrameDesk => {
-            let frame = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.48, 0.30, 0.16),
-                ..default()
-            });
-            let pic = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.cat_poster.clone()),
-                ..default()
-            });
+            let frame = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.48, 0.30, 0.16),
+                    ..default()
+                },
+            );
+            let pic = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.cat_poster.clone()),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -3722,6 +4356,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         pf,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.15, 0.18, 0.022),
                         frame,
@@ -3729,7 +4364,7 @@ fn spawn_prop_prefab(
                         0.007,
                     );
                     pf.spawn((
-                        Mesh3d(meshes.add(make_upright_quad_mesh(0.12, 0.15))),
+                        Mesh3d(cache.upright_quad(meshes, 0.12, 0.15)),
                         MeshMaterial3d(pic),
                         Transform::from_xyz(0.0, 0.0, 0.015).with_rotation(r),
                     ));
@@ -3737,16 +4372,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::CardboardBox => {
-            let kraft = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.68, 0.50, 0.31),
-                perceptual_roughness: 0.88,
-                ..default()
-            });
-            let lid = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.88, 0.86, 0.80),
-                perceptual_roughness: 0.85,
-                ..default()
-            });
+            let kraft = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.68, 0.50, 0.31),
+                    perceptual_roughness: 0.88,
+                    ..default()
+                },
+            );
+            let lid = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.88, 0.86, 0.80),
+                    perceptual_roughness: 0.85,
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -3770,6 +4411,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         bx,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.42, 0.30, 0.34),
                         kraft,
@@ -3779,6 +4421,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         bx,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.45, 0.06, 0.37),
                         lid,
@@ -3789,15 +4432,21 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::CoatRack => {
-            let wood = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.42, 0.24, 0.13),
-                ..default()
-            });
-            let coat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.22, 0.30, 0.44),
-                perceptual_roughness: 0.88,
-                ..default()
-            });
+            let wood = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.42, 0.24, 0.13),
+                    ..default()
+                },
+            );
+            let coat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.22, 0.30, 0.44),
+                    perceptual_roughness: 0.88,
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -3821,7 +4470,7 @@ fn spawn_prop_prefab(
                     for a_idx in 0..4 {
                         let a = (a_idx as f32 / 4.0) * std::f32::consts::TAU;
                         cr.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.06, 0.05, 0.34))),
+                            Mesh3d(cache.cuboid(meshes, 0.06, 0.05, 0.34)),
                             MeshMaterial3d(wood.clone()),
                             Transform::from_xyz(a.sin() * 0.14, -0.82, a.cos() * 0.14)
                                 .with_rotation(Quat::from_rotation_y(a)),
@@ -3830,6 +4479,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         cr,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.07, 1.68, 0.07),
                         wood,
@@ -3840,6 +4490,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         cr,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.22, 0.62, 0.16),
                         coat,
@@ -3851,16 +4502,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::CoffeeMakerPot => {
-            let dark = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.14, 0.16, 0.20),
-                perceptual_roughness: 0.48,
-                ..default()
-            });
-            let carafe = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.22, 0.10, 0.05),
-                perceptual_roughness: 0.16,
-                ..default()
-            });
+            let dark = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.14, 0.16, 0.20),
+                    perceptual_roughness: 0.48,
+                    ..default()
+                },
+            );
+            let carafe = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.22, 0.10, 0.05),
+                    perceptual_roughness: 0.16,
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -3893,6 +4550,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         cm,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.24, 0.32, 0.14),
                         dark.clone(),
@@ -3902,6 +4560,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         cm,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.24, 0.06, 0.26),
                         dark,
@@ -3909,7 +4568,7 @@ fn spawn_prop_prefab(
                         0.008,
                     );
                     cm.spawn((
-                        Mesh3d(meshes.add(Cylinder::new(0.075, 0.16))),
+                        Mesh3d(cache.cylinder(meshes, 0.075, 0.16)),
                         MeshMaterial3d(carafe),
                         Transform::from_xyz(0.0, -0.04, 0.04),
                     ));
@@ -3917,21 +4576,30 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::Microwave => {
-            let white = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.86, 0.87, 0.89),
-                perceptual_roughness: 0.42,
-                ..default()
-            });
-            let window = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.10, 0.12, 0.16),
-                perceptual_roughness: 0.2,
-                ..default()
-            });
-            let timer = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.25, 0.98, 0.48),
-                emissive: LinearRgba::rgb(0.3, 2.0, 0.5),
-                ..default()
-            });
+            let white = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.86, 0.87, 0.89),
+                    perceptual_roughness: 0.42,
+                    ..default()
+                },
+            );
+            let window = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.10, 0.12, 0.16),
+                    perceptual_roughness: 0.2,
+                    ..default()
+                },
+            );
+            let timer = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.25, 0.98, 0.48),
+                    emissive: LinearRgba::rgb(0.3, 2.0, 0.5),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -3955,6 +4623,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         mw,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.48, 0.28, 0.34),
                         white,
@@ -3962,12 +4631,12 @@ fn spawn_prop_prefab(
                         0.011,
                     );
                     mw.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.30, 0.20, 0.02))),
+                        Mesh3d(cache.cuboid(meshes, 0.30, 0.20, 0.02)),
                         MeshMaterial3d(window),
                         Transform::from_xyz(-0.06, 0.0, 0.172),
                     ));
                     mw.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.08, 0.035, 0.02))),
+                        Mesh3d(cache.cuboid(meshes, 0.08, 0.035, 0.02)),
                         MeshMaterial3d(timer),
                         Transform::from_xyz(0.16, 0.07, 0.172),
                     ));
@@ -3975,19 +4644,26 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::PottedCactus => {
-            let pot_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.78, 0.40, 0.22),
-                ..default()
-            });
-            let green = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.20, 0.66, 0.34),
-                ..default()
-            });
-            let pot = meshes.add(make_frustum_y_mesh(
+            let pot_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.78, 0.40, 0.22),
+                    ..default()
+                },
+            );
+            let green = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.20, 0.66, 0.34),
+                    ..default()
+                },
+            );
+            let pot = cache.frustum_y(
+                meshes,
                 Vec2::new(0.10, 0.10),
                 Vec2::new(0.15, 0.15),
                 0.12,
-            ));
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -4021,6 +4697,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         cc,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.065, 0.18, 0.065),
                         green.clone(),
@@ -4031,6 +4708,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             cc,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(0.05, 0.07, 0.045),
                             green.clone(),
@@ -4042,19 +4720,26 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::PottedSnakePlant => {
-            let planter = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.86, 0.85, 0.80),
-                ..default()
-            });
-            let blade = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.16, 0.54, 0.28),
-                ..default()
-            });
-            let pot = meshes.add(make_frustum_y_mesh(
+            let planter = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.86, 0.85, 0.80),
+                    ..default()
+                },
+            );
+            let blade = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.16, 0.54, 0.28),
+                    ..default()
+                },
+            );
+            let pot = cache.frustum_y(
+                meshes,
                 Vec2::new(0.28, 0.28),
                 Vec2::new(0.38, 0.38),
                 0.44,
-            ));
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -4091,6 +4776,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             sp,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(0.09, h, 0.025),
                             blade.clone(),
@@ -4103,14 +4789,20 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::ClipboardDesk => {
-            let board = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.58, 0.38, 0.20),
-                ..default()
-            });
-            let page = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.printed_page.clone()),
-                ..default()
-            });
+            let board = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.58, 0.38, 0.20),
+                    ..default()
+                },
+            );
+            let page = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.printed_page.clone()),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -4134,6 +4826,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         cb,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.24, 0.018, 0.32),
                         board,
@@ -4141,7 +4834,7 @@ fn spawn_prop_prefab(
                         0.007,
                     );
                     cb.spawn((
-                        Mesh3d(meshes.add(make_floor_quad_mesh(0.20, 0.26))),
+                        Mesh3d(cache.floor_quad(meshes, 0.20, 0.26)),
                         MeshMaterial3d(page),
                         Transform::from_xyz(0.0, 0.012, 0.01),
                     ));
@@ -4149,15 +4842,21 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::TapeMeasure => {
-            let yellow = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.98, 0.78, 0.12),
-                perceptual_roughness: 0.38,
-                ..default()
-            });
-            let grip = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.14, 0.16, 0.20),
-                ..default()
-            });
+            let yellow = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.98, 0.78, 0.12),
+                    perceptual_roughness: 0.38,
+                    ..default()
+                },
+            );
+            let grip = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.14, 0.16, 0.20),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -4181,6 +4880,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         tm,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.09, 0.085, 0.048),
                         yellow,
@@ -4188,22 +4888,28 @@ fn spawn_prop_prefab(
                         0.007,
                     );
                     tm.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.05, 0.05, 0.052))),
+                        Mesh3d(cache.cuboid(meshes, 0.05, 0.05, 0.052)),
                         MeshMaterial3d(grip),
                     ));
                 });
         }
 
         PropPrefab::Sawhorse => {
-            let hazard = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.hazard_stripe.clone()),
-                uv_transform: Affine2::from_scale(Vec2::new(6.0, 1.0)),
-                ..default()
-            });
-            let lumber = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.72, 0.54, 0.32),
-                ..default()
-            });
+            let hazard = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.hazard_stripe.clone()),
+                    uv_transform: Affine2::from_scale(Vec2::new(6.0, 1.0)),
+                    ..default()
+                },
+            );
+            let lumber = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.72, 0.54, 0.32),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -4227,6 +4933,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         sh,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(1.18, 0.12, 0.12),
                         hazard,
@@ -4238,6 +4945,7 @@ fn spawn_prop_prefab(
                             spawn_outlined_box(
                                 sh,
                                 meshes,
+                                cache,
                                 shared,
                                 Vec3::new(0.06, 0.78, 0.06),
                                 lumber.clone(),
@@ -4251,11 +4959,14 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::CinderBlockStack => {
-            let concrete = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.54, 0.56, 0.58),
-                perceptual_roughness: 0.94,
-                ..default()
-            });
+            let concrete = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.54, 0.56, 0.58),
+                    perceptual_roughness: 0.94,
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -4280,6 +4991,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             cb,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(0.40, 0.18, 0.20),
                             concrete.clone(),
@@ -4292,16 +5004,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::SiteGenerator => {
-            let yellow = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.96, 0.74, 0.12),
-                perceptual_roughness: 0.42,
-                ..default()
-            });
-            let engine = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.16, 0.18, 0.22),
-                metallic: 0.55,
-                ..default()
-            });
+            let yellow = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.96, 0.74, 0.12),
+                    perceptual_roughness: 0.42,
+                    ..default()
+                },
+            );
+            let engine = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.16, 0.18, 0.22),
+                    metallic: 0.55,
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("DIESEL GENERATOR!"),
                 pts(680),
@@ -4329,6 +5047,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         gn,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.74, 0.24, 0.52),
                         yellow,
@@ -4338,6 +5057,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         gn,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.68, 0.34, 0.46),
                         engine,
@@ -4348,11 +5068,14 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::ShelvingRack => {
-            let steel = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.28, 0.32, 0.38),
-                metallic: 0.5,
-                ..default()
-            });
+            let steel = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.28, 0.32, 0.38),
+                    metallic: 0.5,
+                    ..default()
+                },
+            );
             let crate_col = [
                 Color::srgb(0.72, 0.52, 0.32),
                 Color::srgb(0.86, 0.24, 0.20),
@@ -4381,7 +5104,7 @@ fn spawn_prop_prefab(
                     for sx in [-0.55_f32, 0.55_f32] {
                         for sz in [-0.20_f32, 0.20_f32] {
                             sr.spawn((
-                                Mesh3d(meshes.add(Cuboid::new(0.05, 1.72, 0.05))),
+                                Mesh3d(cache.cuboid(meshes, 0.05, 1.72, 0.05)),
                                 MeshMaterial3d(steel.clone()),
                                 Transform::from_xyz(sx, 0.0, sz),
                             ));
@@ -4391,6 +5114,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             sr,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(1.16, 0.04, 0.46),
                             steel.clone(),
@@ -4398,13 +5122,17 @@ fn spawn_prop_prefab(
                             0.009,
                         );
                         if idx < 3 {
-                            let cm = materials.add(StandardMaterial {
-                                base_color: crate_col[idx % crate_col.len()],
-                                ..default()
-                            });
+                            let cm = cache.material(
+                                materials,
+                                StandardMaterial {
+                                    base_color: crate_col[idx % crate_col.len()],
+                                    ..default()
+                                },
+                            );
                             spawn_outlined_box(
                                 sr,
                                 meshes,
+                                cache,
                                 shared,
                                 Vec3::new(0.36, 0.26, 0.32),
                                 cm,
@@ -4417,17 +5145,23 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::BarCart => {
-            let brass = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.82, 0.64, 0.26),
-                metallic: 0.75,
-                perceptual_roughness: 0.28,
-                ..default()
-            });
-            let bottle = materials.add(StandardMaterial {
-                base_color: Color::srgba(0.18, 0.56, 0.32, 0.82),
-                alpha_mode: AlphaMode::Blend,
-                ..default()
-            });
+            let brass = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.82, 0.64, 0.26),
+                    metallic: 0.75,
+                    perceptual_roughness: 0.28,
+                    ..default()
+                },
+            );
+            let bottle = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgba(0.18, 0.56, 0.32, 0.82),
+                    alpha_mode: AlphaMode::Blend,
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -4455,6 +5189,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             bc,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(0.74, 0.04, 0.44),
                             brass.clone(),
@@ -4462,18 +5197,20 @@ fn spawn_prop_prefab(
                             0.009,
                         );
                     }
+                    let leg_mesh = cache.cuboid(meshes, 0.035, 0.82, 0.035);
                     for lx in [-0.34_f32, 0.34_f32] {
                         for lz in [-0.19_f32, 0.19_f32] {
                             bc.spawn((
-                                Mesh3d(meshes.add(Cuboid::new(0.035, 0.82, 0.035))),
+                                Mesh3d(leg_mesh.clone()),
                                 MeshMaterial3d(brass.clone()),
                                 Transform::from_xyz(lx, -0.02, lz),
                             ));
                         }
                     }
+                    let bottle_mesh = cache.cylinder(meshes, 0.045, 0.22);
                     for bx in [-0.18_f32, 0.02, 0.20] {
                         bc.spawn((
-                            Mesh3d(meshes.add(Cylinder::new(0.045, 0.22))),
+                            Mesh3d(bottle_mesh.clone()),
                             MeshMaterial3d(bottle.clone()),
                             Transform::from_xyz(bx, 0.33, 0.0),
                         ));
@@ -4482,17 +5219,23 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::AwardTrophy => {
-            let gold = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.98, 0.80, 0.22),
-                emissive: LinearRgba::rgb(0.35, 0.24, 0.04),
-                metallic: 0.85,
-                perceptual_roughness: 0.20,
-                ..default()
-            });
-            let plinth = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.12, 0.13, 0.16),
-                ..default()
-            });
+            let gold = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.98, 0.80, 0.22),
+                    emissive: LinearRgba::rgb(0.35, 0.24, 0.04),
+                    metallic: 0.85,
+                    perceptual_roughness: 0.20,
+                    ..default()
+                },
+            );
+            let plinth = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.12, 0.13, 0.16),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -4516,17 +5259,19 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         tr,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.14, 0.08, 0.14),
                         plinth,
                         Transform::from_xyz(0.0, -0.11, 0.0),
                         0.007,
                     );
-                    let cup = meshes.add(make_frustum_y_mesh(
+                    let cup = cache.frustum_y(
+                        meshes,
                         Vec2::new(0.06, 0.06),
                         Vec2::new(0.15, 0.15),
                         0.18,
-                    ));
+                    );
                     tr.spawn((
                         Mesh3d(cup.clone()),
                         MeshMaterial3d(gold),
@@ -4541,18 +5286,24 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::CredenzaCabinet => {
-            let wood = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.walnut_desk.clone()),
-                base_color: Color::srgb(0.86, 0.64, 0.56),
-                uv_transform: Affine2::from_scale(Vec2::new(2.5, 1.0)),
-                perceptual_roughness: 0.45,
-                ..default()
-            });
-            let brass = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.80, 0.64, 0.26),
-                metallic: 0.7,
-                ..default()
-            });
+            let wood = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.walnut_desk.clone()),
+                    base_color: Color::srgb(0.86, 0.64, 0.56),
+                    uv_transform: Affine2::from_scale(Vec2::new(2.5, 1.0)),
+                    perceptual_roughness: 0.45,
+                    ..default()
+                },
+            );
+            let brass = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.80, 0.64, 0.26),
+                    metallic: 0.7,
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -4576,15 +5327,17 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         cd,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(1.65, 0.68, 0.52),
                         wood,
                         Transform::from_xyz(0.0, 0.03, 0.0),
                         0.014,
                     );
+                    let handle_mesh = cache.cuboid(meshes, 0.10, 0.025, 0.025);
                     for hx in [-0.42_f32, 0.0, 0.42] {
                         cd.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.10, 0.025, 0.025))),
+                            Mesh3d(handle_mesh.clone()),
                             MeshMaterial3d(brass.clone()),
                             Transform::from_xyz(hx, 0.12, 0.27),
                         ));
@@ -4593,14 +5346,20 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::EaselChart => {
-            let wood = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.56, 0.38, 0.20),
-                ..default()
-            });
-            let chart = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.whiteboard_doodle.clone()),
-                ..default()
-            });
+            let wood = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.56, 0.38, 0.20),
+                    ..default()
+                },
+            );
+            let chart = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.whiteboard_doodle.clone()),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -4624,6 +5383,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         ez,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.74, 0.92, 0.05),
                         wood.clone(),
@@ -4632,21 +5392,22 @@ fn spawn_prop_prefab(
                         0.011,
                     );
                     ez.spawn((
-                        Mesh3d(meshes.add(make_upright_quad_mesh(0.68, 0.84))),
+                        Mesh3d(cache.upright_quad(meshes, 0.68, 0.84)),
                         MeshMaterial3d(chart),
                         Transform::from_xyz(0.0, 0.26, 0.032)
                             .with_rotation(Quat::from_rotation_x(-0.10)),
                     ));
+                    let leg_mesh = cache.cuboid(meshes, 0.045, 1.48, 0.045);
                     for lx in [-0.28_f32, 0.28_f32] {
                         ez.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.045, 1.48, 0.045))),
+                            Mesh3d(leg_mesh.clone()),
                             MeshMaterial3d(wood.clone()),
                             Transform::from_xyz(lx, -0.04, 0.06)
                                 .with_rotation(Quat::from_rotation_x(-0.12)),
                         ));
                     }
                     ez.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.045, 1.48, 0.045))),
+                        Mesh3d(leg_mesh),
                         MeshMaterial3d(wood),
                         Transform::from_xyz(0.0, -0.04, -0.22)
                             .with_rotation(Quat::from_rotation_x(0.24)),
@@ -4655,15 +5416,21 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::PizzaBoxStack => {
-            let box_mat = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.90, 0.86, 0.76),
-                perceptual_roughness: 0.85,
-                ..default()
-            });
-            let red_logo = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.86, 0.20, 0.18),
-                ..default()
-            });
+            let box_mat = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.90, 0.86, 0.76),
+                    perceptual_roughness: 0.85,
+                    ..default()
+                },
+            );
+            let red_logo = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.86, 0.20, 0.18),
+                    ..default()
+                },
+            );
             commands
                 .spawn((
                     ScenarioEntity,
@@ -4693,6 +5460,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             pz,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(0.40, 0.045, 0.40),
                             box_mat.clone(),
@@ -4702,7 +5470,7 @@ fn spawn_prop_prefab(
                         );
                     }
                     pz.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.18, 0.01, 0.18))),
+                        Mesh3d(cache.cuboid(meshes, 0.18, 0.01, 0.18)),
                         MeshMaterial3d(red_logo),
                         Transform::from_xyz(0.0, 0.082, 0.0),
                     ));
@@ -4710,16 +5478,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::OfficeShredder => {
-            let body = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.18, 0.20, 0.25),
-                perceptual_roughness: 0.58,
-                ..default()
-            });
-            let slot = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.72, 0.76, 0.82),
-                metallic: 0.6,
-                ..default()
-            });
+            let body = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.18, 0.20, 0.25),
+                    perceptual_roughness: 0.58,
+                    ..default()
+                },
+            );
+            let slot = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.72, 0.76, 0.82),
+                    metallic: 0.6,
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("SEVERANCE SHREDDER!"),
                 pts(580),
@@ -4746,6 +5520,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         sh,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.42, 0.64, 0.32),
                         body,
@@ -4753,7 +5528,7 @@ fn spawn_prop_prefab(
                         0.011,
                     );
                     sh.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.32, 0.02, 0.08))),
+                        Mesh3d(cache.cuboid(meshes, 0.32, 0.02, 0.08)),
                         MeshMaterial3d(slot),
                         Transform::from_xyz(0.0, 0.325, 0.0),
                     ));
@@ -4762,19 +5537,25 @@ fn spawn_prop_prefab(
 
         // ── Scene 4: All-Hands Town Hall Stage Prefabs ───────────────────────
         PropPrefab::LedVideoWall => {
-            let frame = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.12, 0.12, 0.18),
-                metallic: 0.55,
-                perceptual_roughness: 0.42,
-                ..default()
-            });
-            let screen = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.townhall_slide.clone()),
-                emissive: LinearRgba::rgb(0.85, 0.50, 1.15),
-                emissive_texture: Some(textures.townhall_slide.clone()),
-                perceptual_roughness: 0.18,
-                ..default()
-            });
+            let frame = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.12, 0.12, 0.18),
+                    metallic: 0.55,
+                    perceptual_roughness: 0.42,
+                    ..default()
+                },
+            );
+            let screen = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.townhall_slide.clone()),
+                    emissive: LinearRgba::rgb(0.85, 0.50, 1.15),
+                    emissive_texture: Some(textures.townhall_slide.clone()),
+                    perceptual_roughness: 0.18,
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("15% RIF VIDEO WALL!"),
                 pts(780),
@@ -4802,6 +5583,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         vw,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(1.88, 1.06, 0.10),
                         frame.clone(),
@@ -4810,13 +5592,14 @@ fn spawn_prop_prefab(
                     );
                     vw.spawn((
                         ScreenSurface,
-                        Mesh3d(meshes.add(make_upright_quad_mesh(1.76, 0.94))),
+                        Mesh3d(cache.upright_quad(meshes, 1.76, 0.94)),
                         MeshMaterial3d(screen),
                         Transform::from_xyz(0.0, 0.14, 0.056),
                     ));
+                    let leg_mesh = cache.cuboid(meshes, 0.08, 0.38, 0.32);
                     for lx in [-0.68_f32, 0.68_f32] {
                         vw.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.08, 0.38, 0.32))),
+                            Mesh3d(leg_mesh.clone()),
                             MeshMaterial3d(frame.clone()),
                             Transform::from_xyz(lx, -0.49, 0.0),
                         ));
@@ -4825,18 +5608,24 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::TeleprompterRig => {
-            let stand = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.16, 0.18, 0.22),
-                metallic: 0.6,
-                ..default()
-            });
-            let glass = materials.add(StandardMaterial {
-                base_color: Color::srgba(0.62, 0.92, 0.98, 0.58),
-                emissive: LinearRgba::rgb(0.18, 0.52, 0.64),
-                alpha_mode: AlphaMode::Blend,
-                perceptual_roughness: 0.10,
-                ..default()
-            });
+            let stand = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.16, 0.18, 0.22),
+                    metallic: 0.6,
+                    ..default()
+                },
+            );
+            let glass = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgba(0.62, 0.92, 0.98, 0.58),
+                    emissive: LinearRgba::rgb(0.18, 0.52, 0.64),
+                    alpha_mode: AlphaMode::Blend,
+                    perceptual_roughness: 0.10,
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("FAKE EMPATHY RIG!"),
                 pts(440),
@@ -4863,6 +5652,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         tp,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.42, 0.05, 0.38),
                         stand.clone(),
@@ -4870,7 +5660,7 @@ fn spawn_prop_prefab(
                         0.009,
                     );
                     tp.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.05, 1.08, 0.05))),
+                        Mesh3d(cache.cuboid(meshes, 0.05, 1.08, 0.05)),
                         MeshMaterial3d(stand),
                         Transform::from_xyz(0.0, -0.08, 0.0),
                     ));
@@ -4879,7 +5669,7 @@ fn spawn_prop_prefab(
                             size: Vec2::new(0.40, 0.34),
                             z_offset: 0.02,
                         },
-                        Mesh3d(meshes.add(Cuboid::new(0.42, 0.36, 0.025))),
+                        Mesh3d(cache.cuboid(meshes, 0.42, 0.36, 0.025)),
                         MeshMaterial3d(glass),
                         Transform::from_xyz(0.0, 0.48, 0.04)
                             .with_rotation(Quat::from_rotation_x(-0.62)),
@@ -4888,17 +5678,23 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::ConfettiCannon => {
-            let gold = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.96, 0.76, 0.18),
-                metallic: 0.65,
-                perceptual_roughness: 0.32,
-                ..default()
-            });
-            let mag = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.92, 0.22, 0.68),
-                emissive: LinearRgba::rgb(0.65, 0.08, 0.45),
-                ..default()
-            });
+            let gold = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.96, 0.76, 0.18),
+                    metallic: 0.65,
+                    perceptual_roughness: 0.32,
+                    ..default()
+                },
+            );
+            let mag = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.92, 0.22, 0.68),
+                    emissive: LinearRgba::rgb(0.65, 0.08, 0.45),
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("BUYBACK CONFETTI!"),
                 pts(640),
@@ -4931,6 +5727,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         cc,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.36, 0.10, 0.36),
                         mag.clone(),
@@ -4938,7 +5735,7 @@ fn spawn_prop_prefab(
                         0.009,
                     );
                     let barrel =
-                        meshes.add(make_frustum_y_mesh(Vec2::splat(0.22), Vec2::splat(0.32), 0.68));
+                        cache.frustum_y(meshes, Vec2::splat(0.22), Vec2::splat(0.32), 0.68);
                     cc.spawn((
                         Mesh3d(barrel.clone()),
                         MeshMaterial3d(gold),
@@ -4957,15 +5754,21 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::PaSpeakerStack => {
-            let cab = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.13, 0.14, 0.18),
-                perceptual_roughness: 0.78,
-                ..default()
-            });
-            let cone = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.28, 0.30, 0.38),
-                ..default()
-            });
+            let cab = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.13, 0.14, 0.18),
+                    perceptual_roughness: 0.78,
+                    ..default()
+                },
+            );
+            let cone = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.28, 0.30, 0.38),
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("TOWN HALL PA STACK!"),
                 pts(520),
@@ -4992,6 +5795,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         pa,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.56, 0.74, 0.48),
                         cab.clone(),
@@ -5001,15 +5805,17 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         pa,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.48, 0.58, 0.42),
                         cab,
                         Transform::from_xyz(0.0, 0.36, 0.0),
                         0.011,
                     );
+                    let cone_mesh = cache.cuboid(meshes, 0.28, 0.22, 0.03);
                     for wy in [-0.32_f32, 0.26_f32, 0.50_f32] {
                         pa.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.28, 0.22, 0.03))),
+                            Mesh3d(cone_mesh.clone()),
                             MeshMaterial3d(cone.clone()),
                             Transform::from_xyz(0.0, wy, 0.24),
                         ));
@@ -5018,16 +5824,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::StageMicStand => {
-            let chrome = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.76, 0.80, 0.86),
-                metallic: 0.75,
-                perceptual_roughness: 0.28,
-                ..default()
-            });
-            let black = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.14, 0.15, 0.19),
-                ..default()
-            });
+            let chrome = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.76, 0.80, 0.86),
+                    metallic: 0.75,
+                    perceptual_roughness: 0.28,
+                    ..default()
+                },
+            );
+            let black = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.14, 0.15, 0.19),
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("MUTED Q&A MIC!"),
                 pts(240),
@@ -5054,6 +5866,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         ms,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.32, 0.05, 0.32),
                         black.clone(),
@@ -5061,12 +5874,12 @@ fn spawn_prop_prefab(
                         0.008,
                     );
                     ms.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.035, 1.22, 0.035))),
+                        Mesh3d(cache.cuboid(meshes, 0.035, 1.22, 0.035)),
                         MeshMaterial3d(chrome.clone()),
                         Transform::from_xyz(0.0, -0.02, 0.0),
                     ));
                     ms.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.03, 0.03, 0.44))),
+                        Mesh3d(cache.cuboid(meshes, 0.03, 0.03, 0.44)),
                         MeshMaterial3d(chrome),
                         Transform::from_xyz(0.0, 0.56, 0.12)
                             .with_rotation(Quat::from_rotation_x(-0.35)),
@@ -5074,6 +5887,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         ms,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.07, 0.07, 0.14),
                         black,
@@ -5084,16 +5898,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::RingLightRig => {
-            let halo = materials.add(StandardMaterial {
-                base_color: Color::srgb(1.0, 0.96, 0.90),
-                emissive: LinearRgba::rgb(2.2, 1.9, 1.6),
-                unlit: true,
-                ..default()
-            });
-            let stand = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.16, 0.18, 0.22),
-                ..default()
-            });
+            let halo = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(1.0, 0.96, 0.90),
+                    emissive: LinearRgba::rgb(2.2, 1.9, 1.6),
+                    unlit: true,
+                    ..default()
+                },
+            );
+            let stand = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.16, 0.18, 0.22),
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("CEO APOLOGY HALO!"),
                 pts(380),
@@ -5118,12 +5938,12 @@ fn spawn_prop_prefab(
                 ))
                 .with_children(|rl| {
                     rl.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.38, 0.05, 0.38))),
+                        Mesh3d(cache.cuboid(meshes, 0.38, 0.05, 0.38)),
                         MeshMaterial3d(stand.clone()),
                         Transform::from_xyz(0.0, -0.71, 0.0),
                     ));
                     rl.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.04, 1.12, 0.04))),
+                        Mesh3d(cache.cuboid(meshes, 0.04, 1.12, 0.04)),
                         MeshMaterial3d(stand),
                         Transform::from_xyz(0.0, -0.14, 0.0),
                     ));
@@ -5135,7 +5955,7 @@ fn spawn_prop_prefab(
                         (0.18, 0.50, 0.06, 0.32),
                     ] {
                         rl.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(sx, sy, 0.05))),
+                            Mesh3d(cache.cuboid(meshes, sx, sy, 0.05)),
                             MeshMaterial3d(halo.clone()),
                             Transform::from_xyz(ox, oy, 0.0),
                         ));
@@ -5144,12 +5964,15 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::FoldingChair => {
-            let steel = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.46, 0.50, 0.58),
-                metallic: 0.55,
-                perceptual_roughness: 0.45,
-                ..default()
-            });
+            let steel = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.46, 0.50, 0.58),
+                    metallic: 0.55,
+                    perceptual_roughness: 0.45,
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("AUDIENCE SEAT!"),
                 pts(190),
@@ -5177,6 +6000,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         fc,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.42, 0.04, 0.40),
                         steel.clone(),
@@ -5186,20 +6010,23 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         fc,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.42, 0.24, 0.04),
                         steel.clone(),
                         Transform::from_xyz(0.0, 0.28, -0.18),
                         0.008,
                     );
+                    let back_leg_mesh = cache.cuboid(meshes, 0.035, 0.82, 0.035);
+                    let front_leg_mesh = cache.cuboid(meshes, 0.035, 0.42, 0.035);
                     for lx in [-0.19_f32, 0.19_f32] {
                         fc.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.035, 0.82, 0.035))),
+                            Mesh3d(back_leg_mesh.clone()),
                             MeshMaterial3d(steel.clone()),
                             Transform::from_xyz(lx, 0.0, -0.18),
                         ));
                         fc.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.035, 0.42, 0.035))),
+                            Mesh3d(front_leg_mesh.clone()),
                             MeshMaterial3d(steel.clone()),
                             Transform::from_xyz(lx, -0.21, 0.18),
                         ));
@@ -5208,17 +6035,23 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::BalloonColumn => {
-            let purp = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.68, 0.24, 0.88),
-                perceptual_roughness: 0.22,
-                ..default()
-            });
-            let gold = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.98, 0.78, 0.20),
-                metallic: 0.45,
-                perceptual_roughness: 0.24,
-                ..default()
-            });
+            let purp = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.68, 0.24, 0.88),
+                    perceptual_roughness: 0.22,
+                    ..default()
+                },
+            );
+            let gold = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.98, 0.78, 0.20),
+                    metallic: 0.45,
+                    perceptual_roughness: 0.24,
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("LAYOFF BALLOON ARCH"),
                 pts(340),
@@ -5255,6 +6088,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             bc,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(0.28, 0.26, 0.28),
                             m,
@@ -5267,27 +6101,39 @@ fn spawn_prop_prefab(
 
         // ── Scene 5: Sad Corporate Breakroom Prefabs ─────────────────────────
         PropPrefab::VendingMachine => {
-            let body = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.14, 0.18, 0.24),
-                perceptual_roughness: 0.55,
-                ..default()
-            });
-            let glass = materials.add(StandardMaterial {
-                base_color: Color::srgba(0.75, 0.94, 0.98, 0.48),
-                emissive: LinearRgba::rgb(0.35, 0.55, 0.58),
-                alpha_mode: AlphaMode::Blend,
-                ..default()
-            });
-            let snack_a = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.94, 0.30, 0.22),
-                emissive: LinearRgba::rgb(0.35, 0.08, 0.05),
-                ..default()
-            });
-            let snack_b = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.98, 0.78, 0.18),
-                emissive: LinearRgba::rgb(0.38, 0.28, 0.04),
-                ..default()
-            });
+            let body = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.14, 0.18, 0.24),
+                    perceptual_roughness: 0.55,
+                    ..default()
+                },
+            );
+            let glass = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgba(0.75, 0.94, 0.98, 0.48),
+                    emissive: LinearRgba::rgb(0.35, 0.55, 0.58),
+                    alpha_mode: AlphaMode::Blend,
+                    ..default()
+                },
+            );
+            let snack_a = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.94, 0.30, 0.22),
+                    emissive: LinearRgba::rgb(0.35, 0.08, 0.05),
+                    ..default()
+                },
+            );
+            let snack_b = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.98, 0.78, 0.18),
+                    emissive: LinearRgba::rgb(0.38, 0.28, 0.04),
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("$7 VENDING RIG!"),
                 pts(740),
@@ -5315,12 +6161,14 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         vm,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.92, 1.78, 0.72),
                         body,
                         Transform::IDENTITY,
                         0.014,
                     );
+                    let snack_mesh = cache.cuboid(meshes, 0.11, 0.16, 0.06);
                     for row in 0..3 {
                         for col in 0..3 {
                             let sx = -0.22 + col as f32 * 0.16;
@@ -5331,7 +6179,7 @@ fn spawn_prop_prefab(
                                 snack_b.clone()
                             };
                             vm.spawn((
-                                Mesh3d(meshes.add(Cuboid::new(0.11, 0.16, 0.06))),
+                                Mesh3d(snack_mesh.clone()),
                                 MeshMaterial3d(m),
                                 Transform::from_xyz(sx, sy, 0.34),
                             ));
@@ -5342,7 +6190,7 @@ fn spawn_prop_prefab(
                             size: Vec2::new(0.56, 0.96),
                             z_offset: 0.02,
                         },
-                        Mesh3d(meshes.add(Cuboid::new(0.58, 0.98, 0.02))),
+                        Mesh3d(cache.cuboid(meshes, 0.58, 0.98, 0.02)),
                         MeshMaterial3d(glass),
                         Transform::from_xyz(-0.08, 0.28, 0.37),
                     ));
@@ -5350,19 +6198,28 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::OfficeFridgeTall => {
-            let enamel = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.88, 0.90, 0.84),
-                perceptual_roughness: 0.36,
-                ..default()
-            });
-            let note = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.98, 0.88, 0.32),
-                ..default()
-            });
-            let note_pink = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.98, 0.46, 0.56),
-                ..default()
-            });
+            let enamel = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.88, 0.90, 0.84),
+                    perceptual_roughness: 0.36,
+                    ..default()
+                },
+            );
+            let note = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.98, 0.88, 0.32),
+                    ..default()
+                },
+            );
+            let note_pink = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.98, 0.46, 0.56),
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("5PM FRIDGE PURGE!"),
                 pts(660),
@@ -5393,6 +6250,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         fr,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.84, 1.12, 0.74),
                         enamel.clone(),
@@ -5402,6 +6260,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         fr,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.84, 0.56, 0.74),
                         enamel,
@@ -5409,6 +6268,7 @@ fn spawn_prop_prefab(
                         0.013,
                     );
                     // Passive-aggressive sticky notes plastered all over the door!
+                    let note_mesh = cache.cuboid(meshes, 0.14, 0.14, 0.015);
                     for (nx, ny, pm) in [
                         (-0.16, 0.12, note.clone()),
                         (0.14, 0.04, note_pink.clone()),
@@ -5416,7 +6276,7 @@ fn spawn_prop_prefab(
                         (0.18, -0.18, note_pink),
                     ] {
                         fr.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.14, 0.14, 0.015))),
+                            Mesh3d(note_mesh.clone()),
                             MeshMaterial3d(pm),
                             Transform::from_xyz(nx, ny, 0.38),
                         ));
@@ -5425,20 +6285,29 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::SheetCakeTable => {
-            let frosting = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.98, 0.96, 0.94),
-                perceptual_roughness: 0.52,
-                ..default()
-            });
-            let icing_trim = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.96, 0.34, 0.56),
-                ..default()
-            });
-            let tray = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.76, 0.80, 0.86),
-                metallic: 0.65,
-                ..default()
-            });
+            let frosting = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.98, 0.96, 0.94),
+                    perceptual_roughness: 0.52,
+                    ..default()
+                },
+            );
+            let icing_trim = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.96, 0.34, 0.56),
+                    ..default()
+                },
+            );
+            let tray = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.76, 0.80, 0.86),
+                    metallic: 0.65,
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::small(
                 lbl("0% COLA SHEET CAKE!"),
                 pts(460),
@@ -5468,6 +6337,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         ck,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.62, 0.03, 0.42),
                         tray,
@@ -5477,6 +6347,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         ck,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.54, 0.11, 0.34),
                         frosting,
@@ -5484,7 +6355,7 @@ fn spawn_prop_prefab(
                         0.009,
                     );
                     ck.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.46, 0.025, 0.26))),
+                        Mesh3d(cache.cuboid(meshes, 0.46, 0.025, 0.26)),
                         MeshMaterial3d(icing_trim),
                         Transform::from_xyz(0.0, 0.072, 0.0),
                     ));
@@ -5492,16 +6363,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::CoffeeUrn => {
-            let steel = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.76, 0.80, 0.86),
-                metallic: 0.75,
-                perceptual_roughness: 0.28,
-                ..default()
-            });
-            let black = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.14, 0.15, 0.18),
-                ..default()
-            });
+            let steel = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.76, 0.80, 0.86),
+                    metallic: 0.75,
+                    perceptual_roughness: 0.28,
+                    ..default()
+                },
+            );
+            let black = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.14, 0.15, 0.18),
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("SLUDGE COFFEE URN!"),
                 pts(490),
@@ -5535,7 +6412,7 @@ fn spawn_prop_prefab(
                 ))
                 .with_children(|cu| {
                     let body =
-                        meshes.add(make_frustum_y_mesh(Vec2::splat(0.24), Vec2::splat(0.28), 0.44));
+                        cache.frustum_y(meshes, Vec2::splat(0.24), Vec2::splat(0.28), 0.44);
                     cu.spawn((
                         Mesh3d(body.clone()),
                         MeshMaterial3d(steel),
@@ -5550,6 +6427,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         cu,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.26, 0.08, 0.26),
                         black,
@@ -5560,12 +6438,15 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::SodaCanSixPack => {
-            let cyan = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.22, 0.78, 0.92),
-                metallic: 0.55,
-                perceptual_roughness: 0.30,
-                ..default()
-            });
+            let cyan = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.22, 0.78, 0.92),
+                    metallic: 0.55,
+                    perceptual_roughness: 0.30,
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::small(
                 lbl("WARM SELTZER PACK!"),
                 pts(230),
@@ -5599,6 +6480,7 @@ fn spawn_prop_prefab(
                             spawn_outlined_box(
                                 sp,
                                 meshes,
+                                cache,
                                 shared,
                                 Vec3::new(0.065, 0.13, 0.065),
                                 cyan.clone(),
@@ -5611,16 +6493,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::PlasticTrophyRack => {
-            let wood = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.46, 0.32, 0.20),
-                ..default()
-            });
-            let lucite = materials.add(StandardMaterial {
-                base_color: Color::srgba(0.72, 0.92, 1.0, 0.75),
-                emissive: LinearRgba::rgb(0.22, 0.42, 0.55),
-                alpha_mode: AlphaMode::Blend,
-                ..default()
-            });
+            let wood = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.46, 0.32, 0.20),
+                    ..default()
+                },
+            );
+            let lucite = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgba(0.72, 0.92, 1.0, 0.75),
+                    emissive: LinearRgba::rgb(0.22, 0.42, 0.55),
+                    alpha_mode: AlphaMode::Blend,
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("5YR LUCITE PLAQUES!"),
                 pts(360),
@@ -5647,16 +6535,18 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         tr,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.74, 1.16, 0.32),
                         wood,
                         Transform::IDENTITY,
                         0.011,
                     );
+                    let plaque_mesh = cache.cuboid(meshes, 0.12, 0.22, 0.05);
                     for px in [-0.22_f32, 0.0, 0.22] {
                         for py in [-0.15_f32, 0.28_f32] {
                             tr.spawn((
-                                Mesh3d(meshes.add(Cuboid::new(0.12, 0.22, 0.05))),
+                                Mesh3d(plaque_mesh.clone()),
                                 MeshMaterial3d(lucite.clone()),
                                 Transform::from_xyz(px, py, 0.14),
                             ));
@@ -5667,20 +6557,29 @@ fn spawn_prop_prefab(
 
         // ── Scene 6: Fulfillment Warehouse Supervisor Cage Prefabs ───────────
         PropPrefab::PalletBoxTower => {
-            let pallet_wood = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.62, 0.44, 0.24),
-                perceptual_roughness: 0.85,
-                ..default()
-            });
-            let carton = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.74, 0.56, 0.34),
-                perceptual_roughness: 0.82,
-                ..default()
-            });
-            let tape = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.18, 0.56, 0.88),
-                ..default()
-            });
+            let pallet_wood = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.62, 0.44, 0.24),
+                    perceptual_roughness: 0.85,
+                    ..default()
+                },
+            );
+            let carton = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.74, 0.56, 0.34),
+                    perceptual_roughness: 0.82,
+                    ..default()
+                },
+            );
+            let tape = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.18, 0.56, 0.88),
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("PRIME CRUNCH PALLET"),
                 pts(540),
@@ -5709,6 +6608,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         pl,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(1.06, 0.14, 0.96),
                         pallet_wood,
@@ -5728,6 +6628,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             pl,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(sx, sy, sz),
                             carton.clone(),
@@ -5735,7 +6636,7 @@ fn spawn_prop_prefab(
                             0.010,
                         );
                         pl.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(sx * 0.92, 0.015, 0.06))),
+                            Mesh3d(cache.cuboid(meshes, sx * 0.92, 0.015, 0.06)),
                             MeshMaterial3d(tape.clone()),
                             Transform::from_xyz(bx, by + sy * 0.5 + 0.005, bz),
                         ));
@@ -5744,18 +6645,24 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::ConveyorRoller => {
-            let frame = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.18, 0.46, 0.34),
-                metallic: 0.45,
-                perceptual_roughness: 0.52,
-                ..default()
-            });
-            let roller = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.74, 0.78, 0.84),
-                metallic: 0.75,
-                perceptual_roughness: 0.28,
-                ..default()
-            });
+            let frame = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.18, 0.46, 0.34),
+                    metallic: 0.45,
+                    perceptual_roughness: 0.52,
+                    ..default()
+                },
+            );
+            let roller = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.74, 0.78, 0.84),
+                    metallic: 0.75,
+                    perceptual_roughness: 0.28,
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("NO-BREAK CONVEYOR!"),
                 pts(520),
@@ -5783,6 +6690,7 @@ fn spawn_prop_prefab(
                         spawn_outlined_box(
                             cv,
                             meshes,
+                            cache,
                             shared,
                             Vec3::new(1.66, 0.10, 0.06),
                             frame.clone(),
@@ -5790,18 +6698,20 @@ fn spawn_prop_prefab(
                             0.010,
                         );
                     }
+                    let roller_mesh = cache.cuboid(meshes, 0.09, 0.07, 0.52);
                     for i in 0..7 {
                         let rx = -0.66 + i as f32 * 0.22;
                         cv.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.09, 0.07, 0.52))),
+                            Mesh3d(roller_mesh.clone()),
                             MeshMaterial3d(roller.clone()),
                             Transform::from_xyz(rx, 0.34, 0.0),
                         ));
                     }
+                    let leg_mesh = cache.cuboid(meshes, 0.06, 0.70, 0.06);
                     for lx in [-0.68_f32, 0.68_f32] {
                         for lz in [-0.26_f32, 0.26_f32] {
                             cv.spawn((
-                                Mesh3d(meshes.add(Cuboid::new(0.06, 0.70, 0.06))),
+                                Mesh3d(leg_mesh.clone()),
                                 MeshMaterial3d(frame.clone()),
                                 Transform::from_xyz(lx, -0.04, lz),
                             ));
@@ -5811,17 +6721,23 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::BarcodeScannerGun => {
-            let yel = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.96, 0.76, 0.12),
-                perceptual_roughness: 0.42,
-                ..default()
-            });
-            let laser = materials.add(StandardMaterial {
-                base_color: Color::srgb(1.0, 0.20, 0.18),
-                emissive: LinearRgba::rgb(2.4, 0.15, 0.12),
-                unlit: true,
-                ..default()
-            });
+            let yel = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.96, 0.76, 0.12),
+                    perceptual_roughness: 0.42,
+                    ..default()
+                },
+            );
+            let laser = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(1.0, 0.20, 0.18),
+                    emissive: LinearRgba::rgb(2.4, 0.15, 0.12),
+                    unlit: true,
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::small(
                 lbl("PICK-RATE SCANNER!"),
                 pts(260),
@@ -5848,6 +6764,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         bs,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.10, 0.08, 0.18),
                         yel.clone(),
@@ -5857,6 +6774,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         bs,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.07, 0.14, 0.07),
                         yel,
@@ -5865,7 +6783,7 @@ fn spawn_prop_prefab(
                         0.006,
                     );
                     bs.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.07, 0.03, 0.02))),
+                        Mesh3d(cache.cuboid(meshes, 0.07, 0.03, 0.02)),
                         MeshMaterial3d(laser),
                         Transform::from_xyz(0.0, 0.05, 0.095),
                     ));
@@ -5873,17 +6791,23 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::QuotaTimerSign => {
-            let post = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.92, 0.72, 0.14),
-                perceptual_roughness: 0.45,
-                ..default()
-            });
-            let screen = materials.add(StandardMaterial {
-                base_color_texture: Some(textures.injury_board.clone()),
-                emissive: LinearRgba::rgb(1.15, 0.35, 0.18),
-                emissive_texture: Some(textures.injury_board.clone()),
-                ..default()
-            });
+            let post = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.92, 0.72, 0.14),
+                    perceptual_roughness: 0.45,
+                    ..default()
+                },
+            );
+            let screen = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color_texture: Some(textures.injury_board.clone()),
+                    emissive: LinearRgba::rgb(1.15, 0.35, 0.18),
+                    emissive_texture: Some(textures.injury_board.clone()),
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("BATHROOM COUNTDOWN!"),
                 pts(560),
@@ -5910,6 +6834,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         qt,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.46, 0.06, 0.38),
                         post.clone(),
@@ -5917,13 +6842,14 @@ fn spawn_prop_prefab(
                         0.009,
                     );
                     qt.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.07, 1.04, 0.07))),
+                        Mesh3d(cache.cuboid(meshes, 0.07, 1.04, 0.07)),
                         MeshMaterial3d(post.clone()),
                         Transform::from_xyz(0.0, -0.20, 0.0),
                     ));
                     spawn_outlined_box(
                         qt,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.84, 0.48, 0.10),
                         post,
@@ -5932,7 +6858,7 @@ fn spawn_prop_prefab(
                     );
                     qt.spawn((
                         ScreenSurface,
-                        Mesh3d(meshes.add(make_upright_quad_mesh(0.76, 0.40))),
+                        Mesh3d(cache.upright_quad(meshes, 0.76, 0.40)),
                         MeshMaterial3d(screen),
                         Transform::from_xyz(0.0, 0.50, 0.056),
                     ));
@@ -5940,16 +6866,22 @@ fn spawn_prop_prefab(
         }
 
         PropPrefab::ShrinkWrapRoll => {
-            let film = materials.add(StandardMaterial {
-                base_color: Color::srgba(0.82, 0.92, 0.98, 0.68),
-                alpha_mode: AlphaMode::Blend,
-                perceptual_roughness: 0.18,
-                ..default()
-            });
-            let core = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.64, 0.46, 0.28),
-                ..default()
-            });
+            let film = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgba(0.82, 0.92, 0.98, 0.68),
+                    alpha_mode: AlphaMode::Blend,
+                    perceptual_roughness: 0.18,
+                    ..default()
+                },
+            );
+            let core = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.64, 0.46, 0.28),
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("STRETCH-WRAP ROLL!"),
                 pts(310),
@@ -5974,27 +6906,33 @@ fn spawn_prop_prefab(
                 ))
                 .with_children(|sw| {
                     sw.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(0.10, 0.96, 0.10))),
+                        Mesh3d(cache.cuboid(meshes, 0.10, 0.96, 0.10)),
                         MeshMaterial3d(core),
                         Transform::IDENTITY,
                     ));
                     let roll =
-                        meshes.add(make_frustum_y_mesh(Vec2::splat(0.26), Vec2::splat(0.26), 0.82));
+                        cache.frustum_y(meshes, Vec2::splat(0.26), Vec2::splat(0.26), 0.82);
                     sw.spawn((Mesh3d(roll), MeshMaterial3d(film), Transform::IDENTITY));
                 });
         }
 
         PropPrefab::PropaneForkliftTank => {
-            let tank_yel = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.94, 0.72, 0.14),
-                metallic: 0.45,
-                perceptual_roughness: 0.38,
-                ..default()
-            });
-            let valve = materials.add(StandardMaterial {
-                base_color: Color::srgb(0.86, 0.20, 0.18),
-                ..default()
-            });
+            let tank_yel = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.94, 0.72, 0.14),
+                    metallic: 0.45,
+                    perceptual_roughness: 0.38,
+                    ..default()
+                },
+            );
+            let valve = cache.material(
+                materials,
+                StandardMaterial {
+                    base_color: Color::srgb(0.86, 0.20, 0.18),
+                    ..default()
+                },
+            );
             let mut prop = DestructibleProp::tall(
                 lbl("FORKLIFT LP TANK!"),
                 pts(700),
@@ -6026,7 +6964,7 @@ fn spawn_prop_prefab(
                 ))
                 .with_children(|pt| {
                     let cyl =
-                        meshes.add(make_frustum_y_mesh(Vec2::splat(0.32), Vec2::splat(0.32), 0.68));
+                        cache.frustum_y(meshes, Vec2::splat(0.32), Vec2::splat(0.32), 0.68);
                     pt.spawn((
                         Mesh3d(cyl.clone()),
                         MeshMaterial3d(tank_yel.clone()),
@@ -6041,6 +6979,7 @@ fn spawn_prop_prefab(
                     spawn_outlined_box(
                         pt,
                         meshes,
+                        cache,
                         shared,
                         Vec3::new(0.24, 0.14, 0.24),
                         valve,

@@ -10,8 +10,11 @@ mod prefabs;
 mod render_pipeline;
 mod scenario_data;
 
+use std::time::Duration;
+
 use avian3d::prelude::*;
 use bevy::ecs::system::SystemParam;
+use bevy::light::NotShadowCaster;
 use bevy::pbr::DistanceFog;
 use bevy::prelude::*;
 use bevy::window::{PresentMode, WindowResolution};
@@ -34,7 +37,7 @@ use hud::{
 use meshes::{create_shared_meshes, SharedMeshes};
 use palette::{CorporateJokeRng, VfxPalette};
 use pixel_art::{create_procedural_textures, ProceduralTextures};
-use prefabs::{spawn_scenario_world, ScenarioEntity};
+use prefabs::{spawn_scenario_world, PrefabAssetCache, ScenarioEntity};
 use render_pipeline::{
     apply_scenario_lighting, setup_retro_cameras, PixelRenderState, RetroPostMaterial,
     RetroRenderPlugin, SceneCamera3d,
@@ -79,6 +82,7 @@ pub fn start_game(canvas_selector: &str) {
             ScenarioDataPlugin,
         ))
         .init_state::<GamePhase>()
+        .insert_resource(Time::<Virtual>::from_max_delta(Duration::from_millis(50)))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.08, 0.12)))
         .init_resource::<FlipTracker>()
         .init_resource::<CameraRig>()
@@ -87,6 +91,7 @@ pub fn start_game(canvas_selector: &str) {
         .init_resource::<HudState>()
         .init_resource::<RetroAudio>()
         .init_resource::<CorporateJokeRng>()
+        .init_resource::<PrefabAssetCache>()
         .init_resource::<PendingRoundReset>()
         .init_resource::<HudLeaderboard>()
         .add_systems(
@@ -102,12 +107,13 @@ pub fn start_game(canvas_selector: &str) {
                     .after(setup_shared_assets)
                     .after(setup_retro_cameras),
                 setup_hud.after(setup_retro_cameras),
-                notify_js_ready.after(setup_initial_scene),
+                spawn_shader_warmup.after(setup_initial_scene),
             ),
         )
         .add_systems(
             Update,
             (
+                tick_shader_warmup,
                 handle_flip_gesture.run_if(in_state(GamePhase::Ready)),
                 (process_destruction, process_desk_breakup, check_run_settled)
                     .run_if(in_state(GamePhase::Flipping)),
@@ -147,6 +153,7 @@ fn setup_initial_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut prefab_cache: ResMut<PrefabAssetCache>,
     mut post_mats: ResMut<Assets<RetroPostMaterial>>,
     textures: Res<ProceduralTextures>,
     shared: Res<SharedMeshes>,
@@ -169,6 +176,7 @@ fn setup_initial_scene(
             &mut commands,
             &mut meshes,
             &mut materials,
+            &mut prefab_cache,
             &textures,
             &shared,
             &mut joke_rng,
@@ -207,6 +215,7 @@ struct ResetState<'w> {
     popups: ResMut<'w, PendingPopups>,
     hud_state: ResMut<'w, HudState>,
     joke_rng: ResMut<'w, CorporateJokeRng>,
+    prefab_cache: ResMut<'w, PrefabAssetCache>,
     virtual_time: ResMut<'w, Time<Virtual>>,
     next_state: ResMut<'w, NextState<GamePhase>>,
     pending_reset: ResMut<'w, PendingRoundReset>,
@@ -264,10 +273,11 @@ fn handle_round_and_scenario_input(
     };
 
     let Some(def) = rs.registry.get(&next_id).cloned() else {
-        if !rs.registry.pending_dynamic.contains_key(&next_id) {
-            let handle = asset_server.load(format!("scenarios/{next_id}.json"));
-            rs.registry.pending_dynamic.insert(next_id, handle);
-        }
+        let path = format!("scenarios/{next_id}.json");
+        rs.registry
+            .pending_dynamic
+            .entry(next_id)
+            .or_insert_with(|| asset_server.load(path));
         return;
     };
 
@@ -302,11 +312,97 @@ fn handle_round_and_scenario_input(
         &mut commands,
         &mut meshes,
         &mut materials,
+        &mut rs.prefab_cache,
         &textures,
         &shared,
         &mut rs.joke_rng,
     );
     rs.next_state.set(GamePhase::Ready);
+}
+
+#[derive(Component)]
+struct WarmupEntity;
+
+#[derive(Resource)]
+struct ShaderWarmup {
+    frames_left: u8,
+    done: bool,
+}
+
+fn spawn_shader_warmup(
+    mut commands: Commands,
+    shared: Res<SharedMeshes>,
+    palette: Res<VfxPalette>,
+) {
+    commands.insert_resource(ShaderWarmup {
+        frames_left: 3,
+        done: false,
+    });
+
+    let base_pos = Vec3::new(0.0, 1.15, 0.5);
+    let tiny = Vec3::splat(0.02);
+
+    let warmup_items: [(Handle<Mesh>, Handle<StandardMaterial>, bool); 10] = [
+        (shared.unit_cube.clone(), palette.spark_cyan.clone(), true),
+        (shared.unit_cube.clone(), palette.smoke.clone(), true),
+        (shared.unit_cube.clone(), palette.spiderweb_crack.clone(), true),
+        (shared.unit_cube.clone(), palette.cracked_screen.clone(), false),
+        (shared.unit_cube.clone(), palette.drop_coffee.clone(), true),
+        (shared.unit_cube.clone(), shared.ink_outline_mat.clone(), true),
+        (shared.paper_sheet.clone(), palette.sheet_paper.clone(), true),
+        (shared.floor_quad.clone(), palette.scorch_decal.clone(), true),
+        (shared.shard_wedge.clone(), palette.shard_glass.clone(), true),
+        (shared.shard_wedge.clone(), palette.shard_pcb.clone(), true),
+    ];
+
+    for (i, (mesh, mat, no_shadow)) in warmup_items.into_iter().enumerate() {
+        let pos = base_pos + Vec3::new((i as f32 - 4.5) * 0.04, 0.0, 0.0);
+        let tf = Transform::from_translation(pos).with_scale(tiny);
+        if no_shadow {
+            commands.spawn((
+                WarmupEntity,
+                NotShadowCaster,
+                Mesh3d(mesh),
+                MeshMaterial3d(mat),
+                tf,
+            ));
+        } else {
+            commands.spawn((WarmupEntity, Mesh3d(mesh), MeshMaterial3d(mat), tf));
+        }
+    }
+
+    commands.spawn((
+        WarmupEntity,
+        PointLight {
+            intensity: 1.0,
+            range: 0.5,
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(Vec3::new(0.0, 1.2, 0.5)),
+    ));
+}
+
+fn tick_shader_warmup(
+    mut commands: Commands,
+    warmup: Option<ResMut<ShaderWarmup>>,
+    q: Query<Entity, With<WarmupEntity>>,
+) {
+    let Some(mut warmup) = warmup else {
+        return;
+    };
+    if warmup.done {
+        return;
+    }
+    if warmup.frames_left > 0 {
+        warmup.frames_left -= 1;
+        return;
+    }
+    for entity in &q {
+        commands.entity(entity).despawn();
+    }
+    warmup.done = true;
+    notify_js_ready();
 }
 
 fn notify_js_ready() {

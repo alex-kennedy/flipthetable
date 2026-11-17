@@ -180,8 +180,11 @@ fn sync_pixel_canvas_aspect(
     let w = win.width().max(64.0);
     let h = win.height().max(64.0);
 
+    let desired_scale = Vec3::new(w, h, 1.0);
     for mut tf in &mut quad_q {
-        tf.scale = Vec3::new(w, h, 1.0);
+        if tf.scale != desired_scale {
+            tf.scale = desired_scale;
+        }
     }
 
     let aspect = w / h;

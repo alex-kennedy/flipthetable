@@ -8,7 +8,8 @@ use crate::meshes::{outline_scale_for, SharedMeshes};
 use crate::palette::VfxPalette;
 use crate::prefabs::{
     BreakableDesk, DeskBreakoffPart, DeskTopVisual, DestructibleProp, EmitterStyle, GlassSurface,
-    ImpactProfile, PlayerDesk, ScenarioEntity, ScreenSurface, VfxEmitter,
+    ImpactProfile, PlayerDesk, ScenarioEntity, ScreenSurface, VfxEmitter, LAYER_DEBRIS,
+    LAYER_DEFAULT,
 };
 use crate::GamePhase;
 
@@ -151,7 +152,8 @@ pub struct PendingPopups(pub Vec<PopupSpawn>);
 #[derive(Component)]
 pub struct DebrisChunk {
     pub age: f32,
-    pub frozen: bool,
+    pub mat: Handle<StandardMaterial>,
+    pub outline_thickness: f32,
 }
 
 /// Zero-physics-overhead kinematic shard that bounces off floor & walls and stays as room mess!
@@ -507,7 +509,7 @@ fn spawn_shatter_spectacle(
 ) {
     match prop.profile {
         ImpactProfile::Electronics => {
-            if seq % 2 == 0 {
+            if seq.is_multiple_of(2) {
                 spawn_flash_light(commands, pos + Vec3::Y * 0.28, Color::srgb(0.32, 0.98, 0.92), 42_000.0, 0.18);
             }
             spawn_spark_burst(commands, palette, shared, pos + Vec3::Y * 0.18, 10, vfx_budget);
@@ -1026,15 +1028,19 @@ pub fn update_vfx_emitters(
     }
 }
 
+type DecalQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut FloorDecal, &'static mut Transform),
+    (Without<VfxParticle>, Without<BallisticShard>),
+>;
+
 pub fn update_vfx_particles(
     mut commands: Commands,
     time: Res<Time>,
     mut p_q: Query<(Entity, &mut VfxParticle, &mut Transform)>,
     mut shard_q: Query<(&mut BallisticShard, &mut Transform), Without<VfxParticle>>,
-    mut decal_q: Query<
-        (&mut FloorDecal, &mut Transform),
-        (Without<VfxParticle>, Without<BallisticShard>),
-    >,
+    mut decal_q: DecalQuery,
     mut light_q: Query<(Entity, &mut ExplosionFlashLight, &mut PointLight)>,
 ) {
     let dt = time.delta_secs();
@@ -1169,20 +1175,33 @@ pub fn update_fluttering_papers(
 pub fn update_debris_lifetime(
     mut commands: Commands,
     time: Res<Time>,
-    mut q: Query<(Entity, &mut DebrisChunk, Option<&LinearVelocity>)>,
+    shared: Res<SharedMeshes>,
+    mut q: Query<(Entity, &Transform, &mut DebrisChunk, Option<&LinearVelocity>)>,
 ) {
     let dt = time.delta_secs();
-    for (entity, mut chunk, lin_vel) in &mut q {
-        if chunk.frozen {
-            continue;
-        }
+    for (entity, tf, mut chunk, lin_vel) in &mut q {
         chunk.age += dt;
         let slow = lin_vel.map(|v| v.0.length() < 0.20).unwrap_or(true);
         if (chunk.age > 2.0 && slow) || chunk.age > 4.0 {
-            chunk.frozen = true;
+            let final_tf = *tf;
+            let mat = chunk.mat.clone();
+            let outline_thickness = chunk.outline_thickness;
+            commands.entity(entity).despawn();
             commands
-                .entity(entity)
-                .remove::<(RigidBody, Collider, LinearVelocity, AngularVelocity)>();
+                .spawn((
+                    ScenarioEntity,
+                    Mesh3d(shared.unit_cube.clone()),
+                    MeshMaterial3d(mat),
+                    final_tf,
+                ))
+                .with_children(|c| {
+                    c.spawn((
+                        NotShadowCaster,
+                        Mesh3d(shared.unit_cube.clone()),
+                        MeshMaterial3d(shared.ink_outline_mat.clone()),
+                        Transform::from_scale(outline_scale_for(final_tf.scale, outline_thickness)),
+                    ));
+                });
         }
     }
 }
@@ -1249,9 +1268,11 @@ pub fn process_desk_breakup(
                         ScenarioEntity,
                         DebrisChunk {
                             age: 0.0,
-                            frozen: false,
+                            mat: part.mat.clone(),
+                            outline_thickness: 0.011,
                         },
                         RigidBody::Dynamic,
+                        CollisionLayers::from_bits(LAYER_DEBRIS, LAYER_DEFAULT),
                         Mass(1.6),
                         Restitution::new(0.44),
                         Friction::new(0.32),
@@ -1305,15 +1326,6 @@ pub fn process_desk_breakup(
             );
         }
 
-        if target_stage >= 2 && prev_stage < 2 {
-            let ts = bd.top_size;
-            commands.entity(desk_entity).insert(Collider::compound(vec![(
-                Vec3::new(0.0, 0.34, 0.0),
-                Quat::IDENTITY,
-                Collider::cuboid(ts.x, ts.y, ts.z),
-            )]));
-        }
-
         if target_stage >= 3 && prev_stage < 3 {
             let half_size = Vec3::new(bd.top_size.x * 0.48, bd.top_size.y, bd.top_size.z);
             let quarter_x = bd.top_size.x * 0.25;
@@ -1338,9 +1350,11 @@ pub fn process_desk_breakup(
                     ScenarioEntity,
                     DebrisChunk {
                         age: 0.0,
-                        frozen: false,
+                        mat: bd.top_mat.clone(),
+                        outline_thickness: 0.014,
                     },
                     RigidBody::Dynamic,
+                    CollisionLayers::from_bits(LAYER_DEBRIS, LAYER_DEFAULT),
                     Mass(6.5),
                     Restitution::new(0.42),
                     Friction::new(0.34),
@@ -1363,6 +1377,13 @@ pub fn process_desk_breakup(
                         Transform::from_scale(outline_scale_for(half_size, 0.014)),
                     ));
                 });
+        } else if target_stage >= 2 && prev_stage < 2 {
+            let ts = bd.top_size;
+            commands.entity(desk_entity).insert(Collider::compound(vec![(
+                Vec3::new(0.0, 0.34, 0.0),
+                Quat::IDENTITY,
+                Collider::cuboid(ts.x, ts.y, ts.z),
+            )]));
         }
 
         let (pts, callout) = match target_stage {
@@ -1384,11 +1405,18 @@ pub fn process_desk_breakup(
     }
 }
 
+type SettlingVelocityQuery<'w, 's> = Query<
+    'w,
+    's,
+    &'static mut LinearVelocity,
+    Or<(With<DestructibleProp>, With<PlayerDesk>)>,
+>;
+
 pub fn check_run_settled(
     time: Res<Time<Real>>,
     mut virtual_time: ResMut<Time<Virtual>>,
     mut score: ResMut<ScoreState>,
-    mut vel_q: Query<&mut LinearVelocity, Or<(With<DestructibleProp>, With<PlayerDesk>)>>,
+    mut vel_q: SettlingVelocityQuery,
     mut next_state: ResMut<NextState<GamePhase>>,
 ) {
     let dt = time.delta_secs();
