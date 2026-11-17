@@ -10,10 +10,9 @@ rules_version = '2';
 // Document ID: {uid} (Firebase Auth UID of the Google-authenticated player)
 // Fields:
 //   - username: string (required, length 1..24, trimmed length >= 1, mutable) - Player display handle
-//   - scores: map (required, max 50 keys, mutable) - Personal best scores keyed by levelId
 //   - updatedAt: timestamp (required, must equal request.time via serverTimestamp(), mutable) - Last write timestamp
 //
-// Subcollection: levels/{levelId}/scores
+// Subcollection / Collection Group: levels/{levelId}/scores ({path=**}/scores)
 // Parent ID: {levelId} (string, length 1..64)
 // Document ID: {uid} (Firebase Auth UID of the Google-authenticated player)
 // Fields:
@@ -126,11 +125,9 @@ service cloud.firestore {
 
     // Validate users/{uid} document schema and constraints
     function isValidUserProfile(data) {
-      return hasRequiredFields(['username', 'scores', 'updatedAt']) &&
-             hasOnlyAllowedFields(['username', 'scores', 'updatedAt']) &&
+      return hasRequiredFields(['username', 'updatedAt']) &&
+             hasOnlyAllowedFields(['username', 'updatedAt']) &&
              isValidUsername(data.username) &&
-             data.scores is map &&
-             data.scores.size() <= 50 &&
              isValidServerTimestamp(data.updatedAt);
     }
 
@@ -150,7 +147,7 @@ service cloud.firestore {
     // Collection Rules
     // ===============================================================
 
-    // Private per-user profile & personal high score map (PII/user-private separation)
+    // Private per-user profile (PII/user-private separation)
     match /users/{uid} {
       allow read: if isOwner(uid);
 
@@ -165,7 +162,12 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Per-level public high score leaderboards
+    // Collection-group read access for `scores` subcollections (enables collectionGroup(db, 'scores') queries)
+    match /{path=**}/scores/{uid} {
+      allow read: if true;
+    }
+
+    // Per-level public high score leaderboards (single source of truth for per-level scores)
     match /levels/{levelId} {
       allow read, write: if false;
 

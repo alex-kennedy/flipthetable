@@ -7,6 +7,8 @@
     "build": "npm run build:wasm:release && next build",
     "deploy": "npm run build && npx wrangler pages deploy",
     "start": "next start",
+    "db:check": "node scripts/check-db-integrity.mjs",
+    "db:fix": "node scripts/check-db-integrity.mjs --fix",
     "build:wasm": "rm -f public/wasm/package.json public/wasm/flipthetable_game_bg.wasm.gz && wasm-pack build ../crates/game --target web --dev --out-dir ../../web/public/wasm --out-name flipthetable_game && gzip -1 -f public/wasm/flipthetable_game_bg.wasm",
     "build:wasm:release": "rm -f public/wasm/package.json public/wasm/flipthetable_game_bg.wasm.gz && wasm-pack build ../crates/game --target web --release --out-dir ../../web/public/wasm --out-name flipthetable_game && gzip -9 -f public/wasm/flipthetable_game_bg.wasm"
   },

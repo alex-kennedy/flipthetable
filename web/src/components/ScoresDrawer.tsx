@@ -185,10 +185,19 @@ export function ScoresDrawer({
             }}
           >
             <span style={{ fontSize: "9px", color: "#8be9fd" }}>
-              {username ? `HANDLE: ${username}` : "NO HANDLE SET"}
+              {authBusy
+                ? "SYNCING CLOUD PROFILE..."
+                : username
+                  ? `HANDLE: ${username}`
+                  : "NO HANDLE SET — PICK ONE TO SYNC"}
             </span>
             <div style={{ display: "flex", gap: "5px" }}>
-              <button type="button" onClick={onOpenUsernameModal} style={smallBtnStyle(!username)}>
+              <button
+                type="button"
+                onClick={onOpenUsernameModal}
+                disabled={authBusy}
+                style={smallBtnStyle(!username && !authBusy)}
+              >
                 {username ? "RENAME" : "SET HANDLE"}
               </button>
               <button type="button" onClick={onSignOut} style={smallBtnStyle(false)}>

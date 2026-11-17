@@ -4,7 +4,24 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ScoresDrawer } from "@/components/ScoresDrawer";
 import { UsernameModal } from "@/components/UsernameModal";
 import {
+  buildStoreFromScoresAndRuns,
+  clearAllPendingUserScores,
+  clearGuestScores,
+  clearPendingUserScore,
+  extractFlatScores,
+  loadGuestScores,
+  loadPendingUserScores,
+  loadUserRecentRuns,
+  type LocalScoreStore,
+  mergeRecentRuns,
+  mergeScoreMaps,
+  recordPendingUserScore,
+  saveGuestScores,
+  saveUserRecentRuns,
+} from "@/lib/localScores";
+import {
   DEFAULT_LEADERBOARD_LIMIT,
+  formatAuthError,
   getLevelHighScores,
   type LeaderboardEntry,
   MAX_USERNAME_LENGTH,
@@ -75,11 +92,6 @@ type RunCompletePayload = {
   maxCombo: number;
 };
 
-type LocalScoreStore = {
-  bestByScenario: Record<string, { score: number; combo: number }>;
-  recentRuns: Array<RunCompletePayload & { timestamp: number }>;
-};
-
 type WasmModule = {
   default: (
     moduleOrPath?: string | URL | Request | Response | Promise<Response>,
@@ -93,71 +105,13 @@ type WasmModule = {
 
 type LoadStage = "fetching" | "booting" | "ready" | "error";
 
-const STORAGE_KEY = "flipthetable_scores_v1";
-
-function loadLocalScores(): LocalScoreStore {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      return JSON.parse(raw) as LocalScoreStore;
-    }
-  } catch {
-    // Ignore storage read errors.
-  }
-  return { bestByScenario: {}, recentRuns: [] };
-}
-
-function saveLocalScores(store: LocalScoreStore) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-  } catch {
-    // Ignore storage write errors.
-  }
-}
-
-function extractFlatLocalScores(
-  bestByScenario: Record<string, { score: number; combo: number }>,
-): Record<string, number> {
-  const flat: Record<string, number> = {};
-  for (const [id, entry] of Object.entries(bestByScenario)) {
-    if (entry.score > 0) {
-      flat[id] = entry.score;
-    }
-  }
-  return flat;
-}
-
-function mergeCloudIntoLocalStore(
-  prev: LocalScoreStore,
-  cloudScores: Record<string, number>,
-): LocalScoreStore {
-  let changed = false;
-  const nextBest = { ...prev.bestByScenario };
-  for (const [levelId, cloudScore] of Object.entries(cloudScores)) {
-    const localBest = nextBest[levelId]?.score ?? 0;
-    if (cloudScore > localBest) {
-      nextBest[levelId] = {
-        score: cloudScore,
-        combo: nextBest[levelId]?.combo ?? 1,
-      };
-      changed = true;
-    }
-  }
-  if (!changed) {
-    return prev;
-  }
-  const next: LocalScoreStore = {
-    ...prev,
-    bestByScenario: nextBest,
-  };
-  saveLocalScores(next);
-  return next;
-}
-
 export function GameCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const wasmRef = useRef<WasmModule | null>(null);
   const startedRef = useRef(false);
+  const authSeqRef = useRef<number>(0);
+  const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [stage, setStage] = useState<LoadStage>("fetching");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -174,6 +128,7 @@ export function GameCanvas() {
   const [suggestedHandle, setSuggestedHandle] = useState<string>("");
   const [cloudScores, setCloudScores] = useState<Record<string, number>>({});
   const [authBusy, setAuthBusy] = useState<boolean>(false);
+  const [authSyncing, setAuthSyncing] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [showUsernameModal, setShowUsernameModal] = useState<boolean>(false);
   const [usernameBusy, setUsernameBusy] = useState<boolean>(false);
@@ -192,12 +147,30 @@ export function GameCanvas() {
     cloudScores: {},
   });
 
+  const focusCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (canvas && document.activeElement !== canvas) {
+      canvas.focus({ preventScroll: true });
+    }
+  }, []);
+
+  const showBanner = useCallback((message: string, durationMs = 3200) => {
+    if (bannerTimerRef.current) {
+      clearTimeout(bannerTimerRef.current);
+    }
+    setNewRecordBanner(message);
+    bannerTimerRef.current = setTimeout(() => {
+      setNewRecordBanner(null);
+      bannerTimerRef.current = null;
+    }, durationMs);
+  }, []);
+
   useEffect(() => {
     authRef.current = { uid: currentUid, username, cloudScores };
   }, [currentUid, username, cloudScores]);
 
   useEffect(() => {
-    setScores(loadLocalScores());
+    setScores(loadGuestScores());
     fetch("/assets/scenarios/manifest.json")
       .then((res) => (res.ok ? (res.json() as Promise<ScenarioManifest>) : null))
       .then((manifest) => {
@@ -208,46 +181,121 @@ export function GameCanvas() {
       .catch(() => {
         // Fall back to built-in scenario list.
       });
+
+    return () => {
+      if (bannerTimerRef.current) {
+        clearTimeout(bannerTimerRef.current);
+      }
+    };
   }, []);
 
-  // Subscribe to Firebase Google Auth state & sync localStorage scores on sign-in.
+  // Subscribe to Firebase Google Auth state & safely sync guest/account localStorage scores.
   useEffect(() => {
     const unsub = subscribeAuthState(async (user) => {
+      const seq = ++authSeqRef.current;
       setAuthError(null);
+
       if (!user) {
+        authRef.current = { uid: null, username: null, cloudScores: {} };
         setCurrentUid(null);
         setUsername(null);
+        setSuggestedHandle("");
         setCloudScores({});
+        setAuthSyncing(false);
         setShowUsernameModal(false);
+        setUsernameError(null);
+        setScores(loadGuestScores());
         return;
       }
 
-      setCurrentUid(user.uid);
+      const uid = user.uid;
       const fallbackHandle = (user.displayName ?? "").trim().slice(0, MAX_USERNAME_LENGTH);
+      setCurrentUid(uid);
       setSuggestedHandle(fallbackHandle);
+      setAuthSyncing(true);
+
+      // Combine ONLY genuinely unsynced runs (pending offline runs + unclaimed guest runs).
+      const pendingMap = loadPendingUserScores(uid);
+      const guestLocal = loadGuestScores();
+      const unsyncedScores = mergeScoreMaps(pendingMap, extractFlatScores(guestLocal));
+      const mergedRuns = mergeRecentRuns(loadUserRecentRuns(uid), guestLocal.recentRuns);
+      const hadGuestData =
+        Object.keys(guestLocal.bestByScenario).length > 0 || guestLocal.recentRuns.length > 0;
+      setScores(buildStoreFromScoresAndRuns(unsyncedScores, mergedRuns));
 
       try {
-        const localNow = loadLocalScores();
-        const synced = await syncLocalScores(extractFlatLocalScores(localNow.bestByScenario));
+        const synced = await syncLocalScores(unsyncedScores, uid);
+        if (authSeqRef.current !== seq) {
+          return;
+        }
+
         if (synced) {
-          setUsername(synced.username);
-          setCloudScores(synced.scores);
-          setScores((prev) => mergeCloudIntoLocalStore(prev, synced.scores));
+          clearAllPendingUserScores(uid);
+          if (hadGuestData) {
+            clearGuestScores();
+          }
+          saveUserRecentRuns(uid, mergedRuns);
+          authRef.current = {
+            uid,
+            username: synced.profile.username,
+            cloudScores: synced.profile.scores,
+          };
+          setUsername(synced.profile.username);
+          setCloudScores(synced.profile.scores);
+          setScores(buildStoreFromScoresAndRuns(synced.profile.scores, mergedRuns));
           setBoardRefreshToken((n) => n + 1);
+          if (synced.uploadedCount > 0) {
+            showBanner(
+              `SYNCED ${synced.uploadedCount} LOCAL RECORD${synced.uploadedCount > 1 ? "S" : ""} TO ${synced.profile.username}!`,
+            );
+          }
         } else {
-          // Signed in for the first time — prompt player to choose any arcade handle.
+          // First-time Google user — keep guest store intact until handle is saved.
+          authRef.current = { uid, username: null, cloudScores: {} };
           setUsername(null);
           setCloudScores({});
           setUsernameError(null);
           setShowUsernameModal(true);
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Failed to sync profile.";
-        setAuthError(msg);
+        if (authSeqRef.current !== seq) {
+          return;
+        }
+        setAuthError(formatAuthError(err, "Failed to sync cloud profile."));
+      } finally {
+        if (authSeqRef.current === seq) {
+          setAuthSyncing(false);
+        }
       }
     });
 
     return () => unsub();
+  }, [showBanner]);
+
+  // Auto-resync any offline signed-in runs when network connectivity returns.
+  useEffect(() => {
+    const onOnline = () => {
+      const { uid, username: activeName } = authRef.current;
+      if (!uid || !activeName) return;
+      const pendingMap = loadPendingUserScores(uid);
+      if (Object.keys(pendingMap).length === 0) return;
+      void syncLocalScores(pendingMap, uid)
+        .then((res) => {
+          if (!res || authRef.current.uid !== uid) return;
+          clearAllPendingUserScores(uid);
+          setCloudScores(res.profile.scores);
+          setScores((prev) => buildStoreFromScoresAndRuns(res.profile.scores, prev.recentRuns));
+          if (res.uploadedCount > 0) {
+            setBoardRefreshToken((n) => n + 1);
+          }
+        })
+        .catch(() => {
+          // Ignore transient reconnect errors.
+        });
+    };
+
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
   }, []);
 
   // Fetch active scenario's leaderboard for the top-left Top 5 HUD box.
@@ -276,11 +324,16 @@ export function GameCanvas() {
   // Push Top 5 + My High Score into Bevy's top-left HUD whenever data or scenario changes.
   useEffect(() => {
     if (stage !== "ready") return;
-    const myBest = Math.max(
-      scores.bestByScenario[scenario]?.score ?? 0,
-      cloudScores[scenario] ?? 0,
-    );
-    const rows = (hudBoardRows[scenario] ?? []).slice(0, 5).map((r) => ({
+    const allRows = hudBoardRows[scenario] ?? [];
+    const myBoardRow = currentUid ? allRows.find((r) => r.uid === currentUid) : undefined;
+    const myBest = currentUid
+      ? Math.max(
+          cloudScores[scenario] ?? 0,
+          myBoardRow?.score ?? 0,
+          scores.bestByScenario[scenario]?.score ?? 0,
+        )
+      : (scores.bestByScenario[scenario]?.score ?? 0);
+    const rows = allRows.slice(0, 5).map((r) => ({
       username: r.username,
       score: r.score,
       isMe: Boolean(currentUid && r.uid === currentUid),
@@ -295,8 +348,17 @@ export function GameCanvas() {
   }, [stage, scenario, scores.bestByScenario, cloudScores, hudBoardRows, hudBoardLoading, currentUid]);
 
   useEffect(() => {
-    const onReady = () => setStage("ready");
+    const onReady = () => {
+      setStage("ready");
+      focusCanvas();
+    };
     const onFullscreenChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    const canvasEl = canvasRef.current;
+    const onWebglContextLost = (e: Event) => {
+      e.preventDefault();
+      setStage("error");
+      setErrorMsg("Graphics context lost — please reload the page.");
+    };
 
     const onScenarioChanged = (e: Event) => {
       const detail = (e as CustomEvent<string>).detail;
@@ -308,6 +370,8 @@ export function GameCanvas() {
     const onRunComplete = (e: Event) => {
       try {
         const payload = JSON.parse((e as CustomEvent<string>).detail) as RunCompletePayload;
+        const activeUid = authRef.current.uid;
+        const activeUsername = authRef.current.username;
         const prevCloudBest = authRef.current.cloudScores[payload.scenarioId] ?? 0;
 
         setScores((prev) => {
@@ -315,8 +379,8 @@ export function GameCanvas() {
           const prevOverallBest = Math.max(prevLocalBest, prevCloudBest);
           const isNewBest = payload.totalScore > prevOverallBest && payload.totalScore > 0;
           if (isNewBest) {
-            setNewRecordBanner(`NEW ${payload.scenarioTitle} RECORD: ${payload.totalScore}!`);
-            setTimeout(() => setNewRecordBanner(null), 3200);
+            const suffix = activeUid && !activeUsername ? " — SET HANDLE TO POST!" : "!";
+            showBanner(`NEW ${payload.scenarioTitle} RECORD: ${payload.totalScore}${suffix}`);
           }
 
           const next: LocalScoreStore = {
@@ -332,19 +396,23 @@ export function GameCanvas() {
             },
             recentRuns: [{ ...payload, timestamp: Date.now() }, ...prev.recentRuns].slice(0, 8),
           };
-          saveLocalScores(next);
+
+          if (activeUid) {
+            saveUserRecentRuns(activeUid, next.recentRuns);
+            if (payload.totalScore > prevCloudBest && payload.totalScore > 0) {
+              recordPendingUserScore(activeUid, payload.scenarioId, payload.totalScore);
+            }
+          } else {
+            saveGuestScores(next);
+          }
           return next;
         });
 
-        if (
-          authRef.current.uid &&
-          authRef.current.username &&
-          payload.totalScore > prevCloudBest &&
-          payload.totalScore > 0
-        ) {
-          void submitLevelScore(payload.scenarioId, payload.totalScore)
+        if (activeUid && activeUsername && payload.totalScore > prevCloudBest && payload.totalScore > 0) {
+          void submitLevelScore(payload.scenarioId, payload.totalScore, activeUid)
             .then((res) => {
-              if (res.updated) {
+              clearPendingUserScore(activeUid, payload.scenarioId, res.bestScore);
+              if (res.updated && authRef.current.uid === activeUid) {
                 setCloudScores((prev) => ({
                   ...prev,
                   [payload.scenarioId]: res.bestScore,
@@ -353,7 +421,7 @@ export function GameCanvas() {
               }
             })
             .catch(() => {
-              // Local score remains stored; next session sign-in will retry sync.
+              // Remains in `pending` queue; online reconnect or next session will sync.
             });
         }
       } catch {
@@ -365,6 +433,7 @@ export function GameCanvas() {
     window.addEventListener("flipthetable:scenario_changed", onScenarioChanged);
     window.addEventListener("flipthetable:run_complete", onRunComplete);
     document.addEventListener("fullscreenchange", onFullscreenChange);
+    canvasEl?.addEventListener("webglcontextlost", onWebglContextLost);
 
     if (!startedRef.current) {
       startedRef.current = true;
@@ -411,17 +480,23 @@ export function GameCanvas() {
       window.removeEventListener("flipthetable:scenario_changed", onScenarioChanged);
       window.removeEventListener("flipthetable:run_complete", onRunComplete);
       document.removeEventListener("fullscreenchange", onFullscreenChange);
+      canvasEl?.removeEventListener("webglcontextlost", onWebglContextLost);
     };
-  }, []);
+  }, [showBanner, focusCanvas]);
 
-  const handleSelectScenario = useCallback((id: string) => {
-    setScenario(id);
-    wasmRef.current?.bridge_load_scenario(id);
-  }, []);
+  const handleSelectScenario = useCallback(
+    (id: string) => {
+      setScenario(id);
+      wasmRef.current?.bridge_load_scenario(id);
+      focusCanvas();
+    },
+    [focusCanvas],
+  );
 
   const handleReset = useCallback(() => {
     wasmRef.current?.bridge_reset_round();
-  }, []);
+    focusCanvas();
+  }, [focusCanvas]);
 
   const handleToggleMute = useCallback(() => {
     setMuted((prev) => {
@@ -429,7 +504,8 @@ export function GameCanvas() {
       wasmRef.current?.bridge_set_muted(next);
       return next;
     });
-  }, []);
+    focusCanvas();
+  }, [focusCanvas]);
 
   const toggleFullscreen = useCallback(async () => {
     const el = containerRef.current;
@@ -442,8 +518,10 @@ export function GameCanvas() {
       }
     } catch {
       // Ignore fullscreen rejections.
+    } finally {
+      focusCanvas();
     }
-  }, []);
+  }, [focusCanvas]);
 
   const handleSignIn = useCallback(async () => {
     setAuthBusy(true);
@@ -453,43 +531,79 @@ export function GameCanvas() {
     } catch (err) {
       const code = (err as { code?: string })?.code ?? "";
       if (code !== "auth/popup-closed-by-user" && code !== "auth/cancelled-popup-request") {
-        setAuthError(err instanceof Error ? err.message : "Google sign-in failed.");
+        const msg = formatAuthError(err, "Google sign-in failed.");
+        setAuthError(msg);
+        showBanner(msg, 4200);
       }
     } finally {
       setAuthBusy(false);
     }
-  }, []);
+  }, [showBanner]);
 
   const handleSignOut = useCallback(async () => {
+    authSeqRef.current += 1;
     setAuthError(null);
+    setUsernameError(null);
+    setShowUsernameModal(false);
     try {
       await signOutUser();
-      setShowUsernameModal(false);
+      authRef.current = { uid: null, username: null, cloudScores: {} };
+      setCurrentUid(null);
+      setUsername(null);
+      setCloudScores({});
+      setScores(loadGuestScores());
     } catch (err) {
-      setAuthError(err instanceof Error ? err.message : "Failed to sign out.");
+      setAuthError(formatAuthError(err, "Failed to sign out."));
     }
   }, []);
 
-  const handleSaveUsername = useCallback(async (chosenHandle: string) => {
-    setUsernameBusy(true);
-    setUsernameError(null);
-    try {
-      const localNow = loadLocalScores();
-      const updated = await saveCloudUsername(
-        chosenHandle,
-        extractFlatLocalScores(localNow.bestByScenario),
-      );
-      setUsername(updated.username);
-      setCloudScores(updated.scores);
-      setScores((prev) => mergeCloudIntoLocalStore(prev, updated.scores));
-      setShowUsernameModal(false);
-      setBoardRefreshToken((n) => n + 1);
-    } catch (err) {
-      setUsernameError(err instanceof Error ? err.message : "Failed to save handle.");
-    } finally {
-      setUsernameBusy(false);
-    }
-  }, []);
+  const handleSaveUsername = useCallback(
+    async (chosenHandle: string) => {
+      const uid = authRef.current.uid;
+      if (!uid) {
+        setUsernameError("You must sign in with Google first.");
+        return;
+      }
+      setUsernameBusy(true);
+      setUsernameError(null);
+      try {
+        const guestLocal = loadGuestScores();
+        const unsyncedScores = mergeScoreMaps(
+          loadPendingUserScores(uid),
+          extractFlatScores(guestLocal),
+        );
+        const mergedRuns = mergeRecentRuns(loadUserRecentRuns(uid), guestLocal.recentRuns);
+        const hadGuestData =
+          Object.keys(guestLocal.bestByScenario).length > 0 || guestLocal.recentRuns.length > 0;
+        const updated = await saveCloudUsername(chosenHandle, unsyncedScores);
+        if (authRef.current.uid !== uid) {
+          return;
+        }
+        clearAllPendingUserScores(uid);
+        if (hadGuestData) {
+          clearGuestScores();
+        }
+        saveUserRecentRuns(uid, mergedRuns);
+        authRef.current = {
+          uid,
+          username: updated.username,
+          cloudScores: updated.scores,
+        };
+        setUsername(updated.username);
+        setCloudScores(updated.scores);
+        setScores(buildStoreFromScoresAndRuns(updated.scores, mergedRuns));
+        setShowUsernameModal(false);
+        setBoardRefreshToken((n) => n + 1);
+        showBanner(`HANDLE SAVED: ${updated.username}!`);
+        focusCanvas();
+      } catch (err) {
+        setUsernameError(formatAuthError(err, "Failed to save handle."));
+      } finally {
+        setUsernameBusy(false);
+      }
+    },
+    [showBanner, focusCanvas],
+  );
 
   const isOverlayVisible = stage !== "ready";
 
@@ -519,6 +633,7 @@ export function GameCanvas() {
       }}
     >
       <canvas
+        ref={canvasRef}
         id="bevy-canvas"
         tabIndex={0}
         style={{
@@ -585,43 +700,95 @@ export function GameCanvas() {
           <button
             key={entry.id}
             type="button"
-            onClick={() => handleSelectScenario(entry.id)}
+            onClick={(e) => {
+              e.currentTarget.blur();
+              handleSelectScenario(entry.id);
+            }}
             style={pillBtnStyle(scenario === entry.id)}
           >
             {entry.shortLabel}
           </button>
         ))}
-        <button type="button" onClick={handleReset} style={pillBtnStyle(false)}>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.currentTarget.blur();
+            handleReset();
+          }}
+          style={pillBtnStyle(false)}
+        >
           RETRY
         </button>
-        <button type="button" onClick={handleToggleMute} style={pillBtnStyle(muted)}>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.currentTarget.blur();
+            handleToggleMute();
+          }}
+          style={pillBtnStyle(muted)}
+        >
           {muted ? "MUTED" : "SFX ON"}
         </button>
         {!currentUid ? (
           <button
             type="button"
-            onClick={handleSignIn}
+            onClick={(e) => {
+              e.currentTarget.blur();
+              void handleSignIn();
+            }}
             disabled={authBusy}
             style={pillBtnStyle(false)}
           >
-            {authBusy ? "WAIT..." : "GOOGLE LOGIN"}
+            {authBusy ? "SIGNING IN..." : "GOOGLE LOGIN"}
           </button>
         ) : (
-          <button
-            type="button"
-            onClick={() => {
-              setUsernameError(null);
-              setShowUsernameModal(true);
-            }}
-            style={pillBtnStyle(!username)}
-          >
-            {username ? `ID: ${username}` : "SET HANDLE"}
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.currentTarget.blur();
+                setUsernameError(null);
+                setShowUsernameModal(true);
+              }}
+              disabled={authSyncing}
+              style={pillBtnStyle(!username && !authSyncing)}
+            >
+              {authSyncing ? "SYNCING..." : username ? `ID: ${username}` : "SET HANDLE"}
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.currentTarget.blur();
+                void handleSignOut();
+              }}
+              style={pillBtnStyle(false)}
+            >
+              LOGOUT
+            </button>
+          </>
         )}
-        <button type="button" onClick={() => setShowScores((s) => !s)} style={pillBtnStyle(showScores)}>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.currentTarget.blur();
+            const next = !showScores;
+            setShowScores(next);
+            if (!next) {
+              focusCanvas();
+            }
+          }}
+          style={pillBtnStyle(showScores)}
+        >
           SCORES
         </button>
-        <button type="button" onClick={toggleFullscreen} style={pillBtnStyle(isFullscreen)}>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.currentTarget.blur();
+            void toggleFullscreen();
+          }}
+          style={pillBtnStyle(isFullscreen)}
+        >
           {isFullscreen ? "EXIT FULL" : "FULLSCREEN"}
         </button>
       </div>
@@ -636,10 +803,13 @@ export function GameCanvas() {
           recentRuns={scores.recentRuns}
           currentUid={currentUid}
           username={username}
-          authBusy={authBusy}
+          authBusy={authBusy || authSyncing}
           authError={authError}
           refreshToken={boardRefreshToken}
-          onClose={() => setShowScores(false)}
+          onClose={() => {
+            setShowScores(false);
+            focusCanvas();
+          }}
           onSignIn={handleSignIn}
           onSignOut={handleSignOut}
           onOpenUsernameModal={() => {
@@ -657,7 +827,10 @@ export function GameCanvas() {
         busy={usernameBusy}
         error={usernameError}
         onSave={handleSaveUsername}
-        onClose={() => setShowUsernameModal(false)}
+        onClose={() => {
+          setShowUsernameModal(false);
+          focusCanvas();
+        }}
         onSignOut={handleSignOut}
       />
 

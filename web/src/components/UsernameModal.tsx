@@ -177,29 +177,30 @@ export function UsernameModal({
         )}
 
         <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", marginTop: "2px" }}>
-          {isInitialSetup ? (
-            <button
-              type="button"
-              onClick={onSignOut}
-              disabled={busy}
-              style={actionBtnStyle(false, busy)}
-            >
-              SIGN OUT
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={busy}
-              style={actionBtnStyle(false, busy)}
-            >
-              CANCEL
-            </button>
-          )}
-
-          <button type="submit" disabled={!canSubmit} style={actionBtnStyle(true, !canSubmit)}>
-            {busy ? "SAVING..." : "SAVE HANDLE"}
+          <button
+            type="button"
+            onClick={onSignOut}
+            disabled={busy}
+            style={actionBtnStyle(false, busy)}
+          >
+            SIGN OUT
           </button>
+
+          <div style={{ display: "flex", gap: "8px" }}>
+            {!isInitialSetup && (
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={busy}
+                style={actionBtnStyle(false, busy)}
+              >
+                CANCEL
+              </button>
+            )}
+            <button type="submit" disabled={!canSubmit} style={actionBtnStyle(true, !canSubmit)}>
+              {busy ? "SAVING..." : "SAVE HANDLE"}
+            </button>
+          </div>
         </div>
       </form>
     </div>

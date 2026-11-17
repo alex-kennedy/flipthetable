@@ -7,6 +7,7 @@ import {
 } from "firebase/auth";
 import {
   collection,
+  collectionGroup,
   doc,
   getDoc,
   getDocs,
@@ -14,7 +15,9 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   Timestamp,
+  where,
   writeBatch,
 } from "firebase/firestore";
 
@@ -24,10 +27,24 @@ export const MAX_USERNAME_LENGTH = 24;
 export const MAX_SCORE_VALUE = 100_000_000;
 export const DEFAULT_LEADERBOARD_LIMIT = 10;
 
+const KNOWN_LEVEL_IDS = [
+  "corporate",
+  "building_site",
+  "boardroom",
+  "all_hands",
+  "breakroom",
+  "warehouse",
+];
+
 export type UserScoreDoc = {
   username: string;
   scores: Record<string, number>;
   updatedAt: Date | null;
+};
+
+export type SyncLocalScoresResult = {
+  profile: UserScoreDoc;
+  uploadedCount: number;
 };
 
 export type LeaderboardEntry = {
@@ -42,6 +59,20 @@ function toDateOrNull(value: unknown): Date | null {
     return value.toDate();
   }
   return null;
+}
+
+export function formatAuthError(err: unknown, fallback: string): string {
+  const code = (err as { code?: string })?.code ?? "";
+  switch (code) {
+    case "auth/popup-blocked":
+      return "Sign-in popup was blocked by your browser. Allow popups for this site and try again.";
+    case "auth/unauthorized-domain":
+      return "This domain is not yet listed under Firebase Auth Authorized Domains.";
+    case "auth/network-request-failed":
+      return "Network error contacting Google Sign-In. Check your connection and retry.";
+    default:
+      return err instanceof Error && err.message ? err.message : fallback;
+  }
 }
 
 export function sanitizeUsername(raw: string): string {
@@ -113,24 +144,73 @@ export async function signOutUser(): Promise<void> {
 }
 
 /**
- * Read a player's private profile (`username` + per-level `scores` map) from `users/{uid}`.
+ * Read all per-level personal bests for `uid` directly from the authoritative
+ * `levels/{levelId}/scores/{uid}` leaderboard documents (single source of truth).
  */
-export async function getUserProfile(uid: string): Promise<UserScoreDoc | null> {
+export async function getUserScores(
+  uid: string,
+  extraLevelIds: string[] = [],
+): Promise<Record<string, number>> {
   const services = getFirebaseServices();
-  if (!services) return null;
+  if (!services || !uid) return {};
 
-  const snap = await getDoc(doc(services.db, "users", uid));
-  if (!snap.exists()) {
+  try {
+    const q = query(collectionGroup(services.db, "scores"), where("uid", "==", uid));
+    const snap = await getDocs(q);
+    const out: Record<string, number> = {};
+    for (const docSnap of snap.docs) {
+      const levelDoc = docSnap.ref.parent.parent;
+      const levelId = levelDoc?.id ?? "";
+      if (!isValidLevelId(levelId)) continue;
+      const score = normalizeScore(typeof docSnap.data().score === "number" ? docSnap.data().score : 0);
+      if (score > 0) {
+        out[levelId] = score;
+      }
+    }
+    return out;
+  } catch {
+    // Fallback to direct primary-key reads if the collectionGroup index is still building.
+    const candidates = [...new Set([...KNOWN_LEVEL_IDS, ...extraLevelIds])].filter(isValidLevelId);
+    const pairs = await Promise.all(
+      candidates.map(async (levelId) => {
+        const snap = await getDoc(doc(services.db, "levels", levelId, "scores", uid));
+        if (!snap.exists()) return [levelId, 0] as const;
+        const score = normalizeScore(typeof snap.data().score === "number" ? snap.data().score : 0);
+        return [levelId, score] as const;
+      }),
+    );
+    const out: Record<string, number> = {};
+    for (const [levelId, score] of pairs) {
+      if (score > 0) {
+        out[levelId] = score;
+      }
+    }
+    return out;
+  }
+}
+
+/**
+ * Read a player's profile (`username` from `users/{uid}` + authoritative `scores` from
+ * `levels/{levelId}/scores/{uid}`).
+ */
+export async function getUserProfile(
+  uid: string,
+  extraLevelIds: string[] = [],
+): Promise<UserScoreDoc | null> {
+  const services = getFirebaseServices();
+  if (!services || !uid) return null;
+
+  const [userSnap, scores] = await Promise.all([
+    getDoc(doc(services.db, "users", uid)),
+    getUserScores(uid, extraLevelIds),
+  ]);
+
+  if (!userSnap.exists()) {
     return null;
   }
 
-  const data = snap.data();
-  const username = typeof data.username === "string" ? data.username : "";
-  const scores =
-    data.scores && typeof data.scores === "object"
-      ? sanitizeScoresMap(data.scores as Record<string, unknown>)
-      : {};
-
+  const data = userSnap.data();
+  const username = typeof data.username === "string" ? data.username.trim() : "";
   if (!username) {
     return null;
   }
@@ -143,16 +223,8 @@ export async function getUserProfile(uid: string): Promise<UserScoreDoc | null> 
 }
 
 /**
- * Read only the single-number personal best map (`{ [levelId]: score }`) for `uid`.
- */
-export async function getUserScores(uid: string): Promise<Record<string, number>> {
-  const profile = await getUserProfile(uid);
-  return profile?.scores ?? {};
-}
-
-/**
  * Create or change the signed-in player's arcade username (non-unique, any 1–24 char string),
- * merging any provided `localScores` and atomically propagating the handle across all
+ * merging any unsynced `localScores` and atomically updating `users/{uid}` plus all
  * `levels/{levelId}/scores/{uid}` leaderboard entries.
  */
 export async function setUsername(
@@ -164,32 +236,34 @@ export async function setUsername(
   if (!services || !user) {
     throw new Error("You must sign in with Google first.");
   }
+  const uid = user.uid;
 
   const username = sanitizeUsername(rawUsername);
-  const existing = await getUserProfile(user.uid);
   const cleanLocal = sanitizeScoresMap(localScores);
+  const existingScores = await getUserScores(uid, Object.keys(cleanLocal));
 
-  const mergedScores: Record<string, number> = { ...(existing?.scores ?? {}) };
+  const mergedScores: Record<string, number> = { ...existingScores };
   for (const [levelId, localScore] of Object.entries(cleanLocal)) {
     const prev = mergedScores[levelId] ?? 0;
-    if (localScore > prev && Object.keys(mergedScores).length < 50) {
-      mergedScores[levelId] = localScore;
-    } else if (levelId in mergedScores && localScore > prev) {
+    if (localScore > prev && (levelId in mergedScores || Object.keys(mergedScores).length < 50)) {
       mergedScores[levelId] = localScore;
     }
   }
 
+  if (services.auth.currentUser?.uid !== uid) {
+    throw new Error("Signed-in account changed before saving.");
+  }
+
   const batch = writeBatch(services.db);
-  batch.set(doc(services.db, "users", user.uid), {
+  batch.set(doc(services.db, "users", uid), {
     username,
-    scores: mergedScores,
     updatedAt: serverTimestamp(),
   });
 
   for (const [levelId, score] of Object.entries(mergedScores)) {
     if (score > 0) {
-      batch.set(doc(services.db, "levels", levelId, "scores", user.uid), {
-        uid: user.uid,
+      batch.set(doc(services.db, "levels", levelId, "scores", uid), {
+        uid,
         username,
         score,
         updatedAt: serverTimestamp(),
@@ -207,24 +281,29 @@ export async function setUsername(
 }
 
 /**
- * Sync `localStorage` best scores up to Firestore on sign-in and return the merged
- * profile (returns `null` if the user has not chosen a username yet).
+ * Sync genuinely unsynced local scores (`guest` + `pending`) up to `levels/{levelId}/scores/{uid}`
+ * and return the authoritative profile (returns `null` if the user has not chosen a handle yet).
  */
 export async function syncLocalScores(
-  localScores: Record<string, number>,
-): Promise<UserScoreDoc | null> {
+  unsyncedLocalScores: Record<string, number>,
+  expectedUid?: string,
+): Promise<SyncLocalScoresResult | null> {
   const services = getFirebaseServices();
   const user = services?.auth.currentUser;
   if (!services || !user) {
     return null;
   }
+  if (expectedUid && user.uid !== expectedUid) {
+    return null;
+  }
+  const uid = user.uid;
 
-  const profile = await getUserProfile(user.uid);
+  const cleanLocal = sanitizeScoresMap(unsyncedLocalScores);
+  const profile = await getUserProfile(uid, Object.keys(cleanLocal));
   if (!profile) {
     return null;
   }
 
-  const cleanLocal = sanitizeScoresMap(localScores);
   const mergedScores: Record<string, number> = { ...profile.scores };
   const improvedLevels: string[] = [];
 
@@ -240,19 +319,17 @@ export async function syncLocalScores(
   }
 
   if (improvedLevels.length === 0) {
-    return profile;
+    return { profile, uploadedCount: 0 };
+  }
+
+  if (services.auth.currentUser?.uid !== uid) {
+    return null;
   }
 
   const batch = writeBatch(services.db);
-  batch.set(doc(services.db, "users", user.uid), {
-    username: profile.username,
-    scores: mergedScores,
-    updatedAt: serverTimestamp(),
-  });
-
   for (const levelId of improvedLevels) {
-    batch.set(doc(services.db, "levels", levelId, "scores", user.uid), {
-      uid: user.uid,
+    batch.set(doc(services.db, "levels", levelId, "scores", uid), {
+      uid,
       username: profile.username,
       score: mergedScores[levelId],
       updatedAt: serverTimestamp(),
@@ -262,19 +339,23 @@ export async function syncLocalScores(
   await batch.commit();
 
   return {
-    username: profile.username,
-    scores: mergedScores,
-    updatedAt: new Date(),
+    profile: {
+      username: profile.username,
+      scores: mergedScores,
+      updatedAt: new Date(),
+    },
+    uploadedCount: improvedLevels.length,
   };
 }
 
 /**
- * Submit a single score number against `levelId`. Writes to `users/{uid}` and
- * `levels/{levelId}/scores/{uid}` only if `rawScore` beats the player's stored best.
+ * Submit a single score number against `levelId`. Writes directly to the single-source-of-truth
+ * document `levels/{levelId}/scores/{uid}` only if `rawScore` beats the stored high score.
  */
 export async function submitLevelScore(
   levelId: string,
   rawScore: number,
+  expectedUid?: string,
 ): Promise<{ updated: boolean; bestScore: number }> {
   const services = getFirebaseServices();
   const user = services?.auth.currentUser;
@@ -283,36 +364,41 @@ export async function submitLevelScore(
   if (!services || !user || !isValidLevelId(levelId) || score <= 0) {
     return { updated: false, bestScore: score };
   }
+  if (expectedUid && user.uid !== expectedUid) {
+    return { updated: false, bestScore: score };
+  }
+  const uid = user.uid;
 
-  const profile = await getUserProfile(user.uid);
-  if (!profile) {
+  const [userSnap, boardSnap] = await Promise.all([
+    getDoc(doc(services.db, "users", uid)),
+    getDoc(doc(services.db, "levels", levelId, "scores", uid)),
+  ]);
+
+  if (!userSnap.exists()) {
+    return { updated: false, bestScore: score };
+  }
+  const username = typeof userSnap.data().username === "string" ? userSnap.data().username.trim() : "";
+  if (!username) {
     return { updated: false, bestScore: score };
   }
 
-  const prevBest = profile.scores[levelId] ?? 0;
+  const prevBest = boardSnap.exists()
+    ? normalizeScore(typeof boardSnap.data().score === "number" ? boardSnap.data().score : 0)
+    : 0;
   if (score <= prevBest) {
     return { updated: false, bestScore: prevBest };
   }
 
-  const nextScores: Record<string, number> = {
-    ...profile.scores,
-    [levelId]: score,
-  };
+  if (services.auth.currentUser?.uid !== uid) {
+    return { updated: false, bestScore: prevBest };
+  }
 
-  const batch = writeBatch(services.db);
-  batch.set(doc(services.db, "users", user.uid), {
-    username: profile.username,
-    scores: nextScores,
-    updatedAt: serverTimestamp(),
-  });
-  batch.set(doc(services.db, "levels", levelId, "scores", user.uid), {
-    uid: user.uid,
-    username: profile.username,
+  await setDoc(doc(services.db, "levels", levelId, "scores", uid), {
+    uid,
+    username,
     score,
     updatedAt: serverTimestamp(),
   });
-
-  await batch.commit();
 
   return { updated: true, bestScore: score };
 }
