@@ -19,6 +19,7 @@ import {
   saveGuestScores,
   saveUserRecentRuns,
 } from "@/lib/localScores";
+import { trackAnalyticsEvent } from "@/lib/firebase";
 import {
   DEFAULT_LEADERBOARD_LIMIT,
   formatAuthError,
@@ -370,6 +371,14 @@ export function GameCanvas() {
     const onRunComplete = (e: Event) => {
       try {
         const payload = JSON.parse((e as CustomEvent<string>).detail) as RunCompletePayload;
+        trackAnalyticsEvent("table_flip", {
+          room_id: payload.scenarioId,
+          room_title: payload.scenarioTitle,
+          score: payload.totalScore,
+          items_destroyed: payload.itemsDestroyed,
+          items_toppled: payload.itemsToppled,
+          max_combo: payload.maxCombo,
+        });
         const activeUid = authRef.current.uid;
         const activeUsername = authRef.current.username;
         const prevCloudBest = authRef.current.cloudScores[payload.scenarioId] ?? 0;

@@ -1,4 +1,4 @@
-import { getAnalytics, isSupported, type Analytics } from "firebase/analytics";
+import { getAnalytics, isSupported, logEvent, type Analytics } from "firebase/analytics";
 import { getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
 import { getAuth, type Auth } from "firebase/auth";
 import { getFirestore, type Firestore } from "firebase/firestore";
@@ -69,4 +69,27 @@ export function getFirebaseServices(): FirebaseServices | null {
 
   cachedServices = { app, auth, db };
   return cachedServices;
+}
+
+/**
+ * Logs a Firebase Analytics event when running in a supported browser.
+ * Safe no-op if analytics is blocked or unavailable.
+ */
+export function trackAnalyticsEvent(
+  eventName: string,
+  params?: Record<string, string | number | boolean>,
+): void {
+  const services = getFirebaseServices();
+  if (!services) {
+    return;
+  }
+  void initFirebaseAnalytics(services.app)
+    .then((analytics) => {
+      if (analytics) {
+        logEvent(analytics, eventName, params);
+      }
+    })
+    .catch(() => {
+      // Ignore analytics failures so gameplay is never affected.
+    });
 }
